@@ -1229,7 +1229,10 @@ export function updateQuickFromText(text) {
   if (/(예산.*얼마|예산.*어느|얼마.*생각|얼마.*예산|얼마쯤|얼마 정도|희망 금액|희망금액|얼마.*까지)/.test(text)) {
     setBudgetCards({ inline: true }); return;
   }
-  if (/(드레스룸\s*형태|형태.*어떻게|어떤\s*형태|형태.*선택|어느\s*형태)/.test(text)) {
+  /* 형태 질문 — 말투 변동 대응: ① 형태명 2개+ 나열 + 질문어 OR ② 형태 표현 */
+  const _shapeHits = (text.match(/(일자형|1자형|ㄱ자형|ㄷ자형|11자형|ㅁ자형)/g) || []).length;
+  if ((_shapeHits >= 2 && /[?？]|인지|계세요|일까요|하세요|신가요|어떠세요|생각/.test(text)) ||
+      /(드레스룸\s*형태|형태.*어떻게|어떤\s*형태|형태.*선택|어느\s*형태|형태로\s*생각|형태.*인지|형태.*계세요|어떤\s*형태로)/.test(text)) {
     setShapeCards({ inline: true }); return;
   }
   /* 선반 색상 질문 — 견적서 항목 언급이 아닌 실제 질문만 */
