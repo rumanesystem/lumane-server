@@ -486,27 +486,51 @@ export function addMsg(role, text, { mid = null, replyTo = null, time = null, sk
     }
 
     /* 견적서 감지 → PNG 이미지로 렌더링 */
-    const looksLikeQuote = /케이트블랑.*견적서/.test(clean) && /고객명|설치지역|총\s*금액|주문내역|\[고객\s*정보\]|\[설치\s*공간\]|\[금액\]/.test(clean);
+    const _kbQuote = /케이트블랑.*견적서/.test(clean) && /고객명|설치지역|총\s*금액|주문내역|\[고객\s*정보\]|\[설치\s*공간\]|\[금액\]/.test(clean);
+    const _bracketQuote = /\[설치\s*공간\]/.test(clean) && /\[금액\]/.test(clean);
+    const looksLikeQuote = _kbQuote || _bracketQuote;
     const isQuote = !skipQuoteImage && looksLikeQuote && typeof window.html2canvas === 'function';
     let hasSpecial = false;
 
     if (isQuote) {
       hasSpecial = true;
 
-      /* 견적서 시작 위치('케이트블랑') 기준으로 3구간 분리
-         [introText] \n--- \n [quoteText] \n--- \n [followText] */
-      const quoteStartIdx = clean.search(/케이트블랑/);
-      const introText = quoteStartIdx > 0 ? clean.slice(0, quoteStartIdx).trim() : '';
-      const quoteAndMore = quoteStartIdx !== -1 ? clean.slice(quoteStartIdx) : clean;
-
-      const lastSepIdx = quoteAndMore.lastIndexOf('\n---');
-      const quoteText  = lastSepIdx !== -1 ? quoteAndMore.slice(0, lastSepIdx).trim() : quoteAndMore;
-      const followText = lastSepIdx !== -1
-        ? quoteAndMore.slice(lastSepIdx)
-            .replace(/^---$/gm, '')
-            .replace(/^\(주\)루마네[^\n]*/m, '')
-            .trim()
-        : '';
+      /* 견적서 위(인사)·아래(후속질문) 분리 → 견적 본문만 PNG, 인사·후속은 별도 버블 */
+      let introText, quoteText, followText;
+      const _kbIdx = clean.search(/케이트블랑/);
+      if (_kbIdx !== -1) {
+        /* 케이트블랑 견적서 형식 (기존: ---  구분자) */
+        introText = _kbIdx > 0 ? clean.slice(0, _kbIdx).trim() : '';
+        const quoteAndMore = clean.slice(_kbIdx);
+        const lastSepIdx = quoteAndMore.lastIndexOf('\n---');
+        quoteText  = lastSepIdx !== -1 ? quoteAndMore.slice(0, lastSepIdx).trim() : quoteAndMore;
+        followText = lastSepIdx !== -1
+          ? quoteAndMore.slice(lastSepIdx).replace(/^---$/gm, '').replace(/^\(주\)루마네[^\n]*/m, '').trim()
+          : '';
+      } else {
+        /* [설치 공간]…[안내] 브라켓 형식 — [안내] 뒤 첫 '일반 산문 줄'부터 후속으로 분리
+           (\n\n 유무 무관: 불릿/섹션헤더/빈줄이 아닌 첫 대화 줄 = 후속질문 시작) */
+        const sIdx = clean.search(/\[설치\s*공간\]/);
+        introText = sIdx > 0 ? clean.slice(0, sIdx).trim() : '';
+        const rest = clean.slice(sIdx < 0 ? 0 : sIdx);
+        const lines = rest.split('\n');
+        const anaeLine = lines.findIndex(l => /\[안내\]/.test(l));
+        let cut = -1;
+        if (anaeLine !== -1) {
+          for (let i = anaeLine + 1; i < lines.length; i++) {
+            const ln = lines[i].trim();
+            if (ln === '' || ln[0] === '-' || ln[0] === '[' || ln[0] === '•') continue;
+            cut = i; break;   /* 첫 일반 산문 줄 = 후속(할인 질문 등) 시작 */
+          }
+        }
+        if (cut !== -1) {
+          quoteText  = lines.slice(0, cut).join('\n').trim();
+          followText = lines.slice(cut).join('\n').trim();
+        } else {
+          quoteText  = rest.trim();
+          followText = '';
+        }
+      }
 
       /* 견적서 앞 AI 인사 멘트 → 먼저 텍스트 버블로 표시 */
       if (introText) {

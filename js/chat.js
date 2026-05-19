@@ -532,7 +532,11 @@ async function send(prefilledText) {
 
     history.push({ role: 'assistant', content: reply, ts: new Date().toISOString() });
     addMsg('bot', reply);
-    if (!/케이트블랑.*견적서/.test(reply)) updateQuickFromText(reply);
+    /* 견적서(케이트블랑 또는 [설치공간]+[금액] 브라켓)는 addMsg가 PNG로 렌더 →
+       updateQuickFromText의 요약카드 중복 방지 */
+    const _isQuoteReply = /케이트블랑.*견적서/.test(reply)
+      || (/\[설치\s*공간\]/.test(reply) && /\[금액\]/.test(reply));
+    if (!_isQuoteReply) updateQuickFromText(reply);
     saveHistory();
 
     // (자동 화면 전환 제거 — 견적서가 채팅창에서 혼자 사라지는 버그 수정)
