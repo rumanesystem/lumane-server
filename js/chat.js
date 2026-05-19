@@ -537,6 +537,37 @@ async function send(prefilledText) {
     const _isQuoteReply = /케이트블랑.*견적서/.test(reply)
       || (/\[설치\s*공간\]/.test(reply) && /\[금액\]/.test(reply));
     if (!_isQuoteReply) updateQuickFromText(reply);
+
+    /* B 안전망: 견적인데 이번 상담에 예시 이미지가 한 번도 없으면
+       견적서 [설치 공간]에서 형태 파싱해 예시 자동 표시 (AI가 [SHOW_EXAMPLE] 누락 대비) */
+    if (_isQuoteReply && !history.some(m => m.role === 'image')) {
+      const _sp = reply.match(/\[설치\s*공간\][^\n]*\n?\s*([^\n]+)/);
+      const _pickShape = (s) => {
+        if (!s) return '';
+        if (/11\s*자/.test(s)) return '11자';
+        if (/ㄷ\s*자/.test(s)) return 'ㄷ자';
+        if (/ㄱ\s*자/.test(s)) return 'ㄱ자';
+        if (/ㅁ\s*자/.test(s)) return 'ㅁ자';
+        if (/(일\s*자|1\s*자|ㅡ\s*자)/.test(s)) return 'ㅡ자';
+        return '';
+      };
+      /* [설치 공간] 한 줄 우선, 못 찾으면 견적 전체에서 형태 폴백 (2행 표기 대비) */
+      const _exShape = _pickShape(_sp ? _sp[1] : '') || _pickShape(reply);
+      if (_exShape) {
+        fetch(`${SERVER}/api/find-example?shape=${encodeURIComponent(_exShape)}&units=&options=`)
+          .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(d => {
+            if (d.success && typeof d.url === 'string') {
+              const imgUrl = d.url.startsWith('http') ? d.url : `${SERVER}${d.url}`;
+              const imgLabel = `📐 ${_exShape} 예시`;
+              history.push({ role: 'image', url: imgUrl, label: imgLabel });
+              saveHistory();
+              setTimeout(() => addImageMsg(imgUrl, imgLabel), 400);
+            }
+          })
+          .catch(e => console.warn('예시 자동표시 실패:', e));
+      }
+    }
     saveHistory();
 
     // (자동 화면 전환 제거 — 견적서가 채팅창에서 혼자 사라지는 버그 수정)
