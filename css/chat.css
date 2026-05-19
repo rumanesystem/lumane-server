@@ -460,6 +460,8 @@ html, body {
   gap: 3px;
   min-width: 0;
 }
+/* 인트로 없이 선택지(①②③ 버튼화)만 있는 경우 빈 말풍선 숨김 */
+.msg-bubbles:empty { display: none; }
 
 /* 메타: 읽음 수 + 시간 */
 .msg-meta {

@@ -449,8 +449,15 @@ export function addMsg(role, text, { mid = null, replyTo = null, time = null, sk
 
   if (role === 'bot') {
 
+    /* ①②③ 선택지 줄은 setQuick이 버튼으로 렌더 → 말풍선 텍스트에선 제거(중복 방지).
+       clean 원본은 견적감지·복사·미리보기용으로 유지, 표시용 parts만 정제 */
+    const _circled = '①②③④⑤⑥⑦⑧⑨⑩';
+    const _circCount = clean.split('\n').filter(l => _circled.includes(l.trim()[0])).length;
+    const _displayClean = _circCount >= 2
+      ? clean.split('\n').filter(l => !_circled.includes(l.trim()[0])).join('\n').trim()
+      : clean;
     /* 문단 기준으로 말풍선 분리 */
-    const parts = clean.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
+    const parts = _displayClean.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
 
     const group = document.createElement('div');
     group.className = 'msg-group bot';
