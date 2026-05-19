@@ -803,12 +803,18 @@ export function setQuick(labels, isChoice = false, opts = {}) {
   /* G6: 직접입력 칩 공통 부착. 기본 ON. 예/아니오 양자택일 질문만 opts.allowManual:false */
   const allowManual = opts.allowManual !== false;
 
-  const hint = document.createElement('div');
-  hint.className = 'quick-hint-label';
-  hint.textContent = isChoice
-    ? '아래 버튼을 눌러 선택해 주세요'
-    : '💡 예시 — 직접 입력해도 됩니다';
-  $quickArea.appendChild(hint);
+  /* 전부 인라인 카드로 통일 — 말풍선 안에 렌더. 호스트 없으면 quickArea 폴백 */
+  const t = _cardTarget({ inline: true });
+
+  /* 인라인이면 힌트 생략(말풍선 자체가 질문), quickArea 폴백 시에만 힌트 */
+  if (!t.inline) {
+    const hint = document.createElement('div');
+    hint.className = 'quick-hint-label';
+    hint.textContent = isChoice
+      ? '아래 버튼을 눌러 선택해 주세요'
+      : '💡 예시 — 직접 입력해도 됩니다';
+    t.el.appendChild(hint);
+  }
 
   const wrap = document.createElement('div');
   wrap.className = 'quick-btns quick-btns--stack';
@@ -818,6 +824,7 @@ export function setQuick(labels, isChoice = false, opts = {}) {
     b.className = isChoice ? 'qbtn choice' : 'qbtn';
     b.textContent = label;
     b.onclick = () => {
+      if (t.inline && t.el.parentNode) t.el.remove();
       $inp.value = label;
       refreshSendBtn();
       $sendBtn.click();
@@ -830,13 +837,14 @@ export function setQuick(labels, isChoice = false, opts = {}) {
     manual.className = 'qbtn qbtn--manual';
     manual.textContent = '✏️ 직접 입력';
     manual.onclick = () => {
-      $quickArea.innerHTML = '';
+      if (t.inline && t.el.parentNode) t.el.remove();
+      else $quickArea.innerHTML = '';
       $inp.focus();
     };
     wrap.appendChild(manual);
   }
 
-  $quickArea.appendChild(wrap);
+  t.el.appendChild(wrap);
 }
 
 /* ── 카드형 퀵 UI — 킵3 디자인 (예산/형태/옵션) ── */
