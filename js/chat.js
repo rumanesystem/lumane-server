@@ -618,7 +618,6 @@ function greet() {
           setBudgetCards({ inline: true });
         } catch (e) {
           console.error('[greet] setBudgetCards 실패:', e);
-          addMsg('bot', '⚠️[진단] 예산 카드 생성 실패: ' + (e && e.message ? e.message : String(e)));
         }
       }, 500);
     }, 300);
