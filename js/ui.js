@@ -1313,13 +1313,19 @@ export function updateQuickFromText(text) {
   if (/(예산.*얼마|예산.*어느|얼마.*생각|얼마.*예산|얼마쯤|얼마 정도|희망 금액|희망금액|얼마.*까지)/.test(text)) {
     setBudgetCards({ inline: true }); return;
   }
+  /* 견적 요약 확인문 — "이런 구성으로 정리해드릴까요?" 류 (색상·기타 오발동 차단 우선) */
+  if (/(정리해\s*드릴|이대로\s*견적|예상\s*견적\s*정리|이\s*구성으로|이런\s*구성으로|이대로\s*진행)/.test(text)) {
+    setQuick(['네 정리해주세요', '조금 더 볼게요'], true); return;
+  }
   /* 색상 — AI가 특정 색을 좁혀 물을 때: 언급된 색 이름만 칩으로 (컨텍스트 맞춤) */
   const COLOR_TOKENS = ['솔리드화이트','화이트오크','샴페인골드','다크월넛','스톤그레이','진그레이','민트그린','메이플','블랙','실버','화이트'];
   let _cScan = text, _cPicked = [];
   for (const _c of COLOR_TOKENS) {
     if (_cScan.includes(_c)) { _cPicked.push(_c); _cScan = _cScan.split(_c).join(' '); }
   }
-  if (_cPicked.length >= 2 && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) {
+  /* 견적 요약 안내문(합계/만원/배송비 등)에 색상 단어가 섞여 있어도 색상 칩 띄우지 않음 */
+  const _isQuoteSummary = /(합계|만원|견적|배송비|구성으로|예상\s*견적)/.test(text);
+  if (_cPicked.length >= 2 && !_isQuoteSummary && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) {
     setQuick(_cPicked, true); return;
   }
   /* 선반 색상 질문 — 견적서 항목 언급이 아닌 실제 질문만 */

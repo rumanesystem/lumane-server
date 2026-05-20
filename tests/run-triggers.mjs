@@ -57,13 +57,17 @@ function detectTrigger(text) {
   /* 예산 */
   if (/(예산.*얼마|예산.*어느|얼마.*생각|얼마.*예산|얼마쯤|얼마 정도|희망 금액|희망금액|얼마.*까지)/.test(text)) return 'budget';
 
+  /* 견적 요약 확인문 — 색상 오발동 차단 우선 */
+  if (/(정리해\s*드릴|이대로\s*견적|예상\s*견적\s*정리|이\s*구성으로|이런\s*구성으로|이대로\s*진행)/.test(text)) return 'confirmQuote';
+
   /* 색상 좁힘 */
   const COLOR_TOKENS = ['솔리드화이트','화이트오크','샴페인골드','다크월넛','스톤그레이','진그레이','민트그린','메이플','블랙','실버','화이트'];
   let cScan = text, cPicked = [];
   for (const c of COLOR_TOKENS) {
     if (cScan.includes(c)) { cPicked.push(c); cScan = cScan.split(c).join(' '); }
   }
-  if (cPicked.length >= 2 && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) return 'colorNarrow';
+  const _isQuoteSummary = /(합계|만원|견적|배송비|구성으로|예상\s*견적)/.test(text);
+  if (cPicked.length >= 2 && !_isQuoteSummary && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) return 'colorNarrow';
 
   /* 선반 색상 */
   if (/(선반\s*색상.*어떻게|선반\s*색상.*알려|선반\s*색상.*선택|선반\s*색상.*원하|어떤\s*선반\s*색상|선반\s*색상은)/.test(text)) return 'colorShelf';
@@ -93,7 +97,7 @@ function detectTrigger(text) {
 }
 
 /* ── 픽스처 파싱 ── */
-const VALID_IDS = new Set(['quote','carousel','example','circled','ceiling','region','shape','space','curtain','dimension','budget','colorNarrow','colorShelf','colorFrame','colorGeneral','option','shelfCount','consent','confirmReceive','none']);
+const VALID_IDS = new Set(['quote','carousel','example','circled','ceiling','region','shape','space','curtain','dimension','budget','colorNarrow','colorShelf','colorFrame','colorGeneral','option','shelfCount','consent','confirmReceive','confirmQuote','none']);
 
 function parseFixtures(md) {
   const cases = [];
