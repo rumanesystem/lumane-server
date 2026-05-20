@@ -532,11 +532,40 @@ async function send(prefilledText) {
 
     history.push({ role: 'assistant', content: reply, ts: new Date().toISOString() });
     addMsg('bot', reply);
-    /* 견적서(케이트블랑 또는 [설치공간]+[금액] 브라켓)는 addMsg가 PNG로 렌더 →
-       updateQuickFromText의 요약카드 중복 방지 */
+    /* 견적서(케이트블랑 또는 [설치공간]+[금액] 브라켓)는 addMsg가 PNG로 렌더.
+       견적 본문 트리거 오발동 방지 + 견적 뒤 후속질문(지역/할인 등)은 카드 떠야 함
+       → 견적이면 followText(견적 뒤 산문)에만 updateQuickFromText 적용, 아니면 전체 적용 */
     const _isQuoteReply = /케이트블랑.*견적서/.test(reply)
       || (/\[설치\s*공간\]/.test(reply) && /\[금액\]/.test(reply));
-    if (!_isQuoteReply) updateQuickFromText(reply);
+    if (_isQuoteReply) {
+      /* 브라켓 견적: [안내] 이후 첫 산문 줄부터 끝까지 = 후속 텍스트.
+         케이트블랑 형식: 마지막 '---' 이후 = 후속 텍스트. */
+      let _followText = '';
+      const _kbIdx = reply.search(/케이트블랑/);
+      if (_kbIdx !== -1) {
+        const _quoteAndMore = reply.slice(_kbIdx);
+        const _lastSep = _quoteAndMore.lastIndexOf('\n---');
+        if (_lastSep !== -1) {
+          _followText = _quoteAndMore.slice(_lastSep).replace(/^---$/gm, '').replace(/^\(주\)루마네[^\n]*/m, '').trim();
+        }
+      } else {
+        const _sIdx = reply.search(/\[설치\s*공간\]/);
+        const _rest = reply.slice(_sIdx < 0 ? 0 : _sIdx);
+        const _lines = _rest.split('\n');
+        const _anaeLine = _lines.findIndex(l => /\[안내\]/.test(l));
+        if (_anaeLine !== -1) {
+          for (let i = _anaeLine + 1; i < _lines.length; i++) {
+            const ln = _lines[i].trim();
+            if (ln === '' || ln[0] === '-' || ln[0] === '[' || ln[0] === '•') continue;
+            _followText = _lines.slice(i).join('\n').trim();
+            break;
+          }
+        }
+      }
+      if (_followText) updateQuickFromText(_followText);
+    } else {
+      updateQuickFromText(reply);
+    }
 
     /* B 안전망: 견적인데 이번 견적 턴에 예시 이미지가 없으면
        견적서 [설치 공간]에서 형태 파싱해 예시 자동 표시 (AI가 [SHOW_EXAMPLE] 누락 대비)
