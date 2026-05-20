@@ -592,9 +592,14 @@ async function send(prefilledText) {
             if (d.success && typeof d.url === 'string') {
               const imgUrl = d.url.startsWith('http') ? d.url : `${SERVER}${d.url}`;
               const imgLabel = `📐 ${_exShape} 예시`;
+              const introMsg = `참고로 ${_exShape}형 구성은 이런 느낌이에요!`;
+              history.push({ role: 'assistant', content: introMsg, ts: new Date().toISOString() });
               history.push({ role: 'image', url: imgUrl, label: imgLabel });
               saveHistory();
-              setTimeout(() => addImageMsg(imgUrl, imgLabel), 400);
+              setTimeout(() => {
+                addMsg('bot', introMsg);
+                addImageMsg(imgUrl, imgLabel);
+              }, 400);
             }
           })
           .catch(e => console.warn('예시 자동표시 실패:', e));

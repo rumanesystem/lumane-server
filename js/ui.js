@@ -1026,7 +1026,10 @@ export function setShapeCards(opts) {
         .then(d => {
           if (d.success && typeof d.url === 'string') {
             const imgUrl = d.url.startsWith('http') ? d.url : `${SERVER}${d.url}`;
-            setTimeout(() => addImageMsg(imgUrl, `📐 ${_shape} 예시`), 600);
+            setTimeout(() => {
+              addMsg('bot', `${c.label}은 이런 느낌이에요. 참고해서 봐주세요!`);
+              addImageMsg(imgUrl, `📐 ${_shape} 예시`);
+            }, 600);
           }
         })
         .catch(e => console.warn('형태 카드 예시 자동표시 실패:', e));
