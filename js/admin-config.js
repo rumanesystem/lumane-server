@@ -111,6 +111,47 @@ function parseSummary(c) {
 }
 
 /**
+ * 어드민 라벨(이름) 수정 헬퍼 — kind: 'conversation' | 'session'
+ * 클릭 → prompt 인풋 → PATCH 호출 → 성공 시 화면 새로고침
+ * (라이브=in-memory sess.customerName, 저장=DB conversations.customer_name)
+ */
+async function renameCustomer(kind, id, currentName, ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  const input = prompt('새 이름을 입력하세요:', currentName || '');
+  if (input === null) return; /* 취소 */
+  const newName = input.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 40);
+  if (!newName) { alert('이름이 비어있습니다.'); return; }
+  if (newName === currentName) return;
+  const url = kind === 'session'
+    ? `${SERVER}/api/admin/sessions/${encodeURIComponent(id)}/name`
+    : `${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/name`;
+  try {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    /* 화면 즉시 갱신 — 가벼운 새로고침 (라이브 폴링·dashboard 리렌더 한 번에 처리) */
+    location.reload();
+  } catch (err) {
+    alert(`이름 변경 실패: ${err.message}`);
+  }
+}
+window.renameCustomer = renameCustomer;
+
+/* 이벤트 위임 — 카드가 동적 재렌더돼도 한 번 바인딩으로 항상 작동.
+   인라인 onclick + JSON.stringify 패턴의 XSS 위험 제거 (data-* 는 단순 문자열만 보관) */
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.js-rename-btn');
+  if (!btn) return;
+  renameCustomer(btn.dataset.kind, btn.dataset.id, btn.dataset.name || '', e);
+});
+
+/**
  * 저장된 상담 카드 표시 이름 생성
  * 우선순위: 실명 → summary.이름 → 지역+형태+옵션 조합 → 상담요약 앞부분 → 저장시각
  */

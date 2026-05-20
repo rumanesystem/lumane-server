@@ -1704,6 +1704,43 @@ app.patch('/api/admin/conversations/:id/restore', requireAdmin, async (req, res)
   }
 });
 
+/* 이름 입력 정규화 — 제어문자 제거 + trim + 40자 제한 */
+function _sanitizeName(raw) {
+  return (typeof raw === 'string' ? raw : '').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 40);
+}
+
+// ── 어드민: 저장된 상담 이름 수정 (라벨 변경, 고객 영향 0) ─────────
+app.patch('/api/admin/conversations/:id/name', requireAdmin, async (req, res) => {
+  const name = _sanitizeName(req.body && req.body.name);
+  if (!name) return res.status(400).json({ error: '이름이 비어있습니다.' });
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .update({ customer_name: name })
+      .eq('id', req.params.id)
+      .select('id, customer_name')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: '대상 상담이 없습니다.' });
+    res.json({ ok: true, customer_name: data.customer_name });
+  } catch (err) {
+    console.error(`[FAIL_RENAME_CONV] id=${req.params.id} err=${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 어드민: 라이브 세션 이름 수정 (in-memory, sess.customerName) ────
+app.patch('/api/admin/sessions/:sessionId/name', requireAdmin, (req, res) => {
+  const name = _sanitizeName(req.body && req.body.name);
+  if (!name) return res.status(400).json({ error: '이름이 비어있습니다.' });
+  const sess = sessions.get(req.params.sessionId);
+  if (!sess) return res.status(404).json({ error: '활성 세션이 없습니다.' });
+  sess.customerName = name;
+  /* AI가 다음 응답에서 'OO 고객님' 패턴으로 customerName을 다시 덮어쓰지 못하게 잠금 */
+  sess.customerNameIsTemp = false;
+  res.json({ ok: true, customer_name: name });
+});
+
 // ── 어드민: 휴지통 — 영구 삭제 (hard-delete, 안전장치 포함) ───
 app.delete('/api/admin/conversations/:id/purge', requireAdmin, async (req, res) => {
   try {

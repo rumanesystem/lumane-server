@@ -210,6 +210,7 @@ function renderLiveSessionList(sessions) {
           <div style="flex:1;min-width:0;">
             <div style="font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;">
               ${escAdmin(s.customerName)}
+              <button type="button" title="이름 수정" class="js-rename-btn" data-kind="session" data-id="${escAttr(s.id)}" data-name="${escAttr(s.customerName||'')}" style="background:transparent;border:none;color:#9ca3af;font-size:11px;cursor:pointer;padding:0 2px;line-height:1;">✏️</button>
               ${isNew ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#ef4444;color:#fff;font-weight:700;">NEW</span>' : ''}
               ${s.isTest ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#fef3c7;color:#92400e;font-weight:700;">테스트</span>' : ''}
             </div>
@@ -250,6 +251,7 @@ function renderLiveSessionList(sessions) {
           <div style="flex:1;min-width:0;">
             <div style="font-size:13px;font-weight:${isNew ? '700' : '600'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px;">
               ${escAdmin(label)}
+              <button type="button" title="이름 수정" class="js-rename-btn" data-kind="conversation" data-id="${escAttr(c.id)}" data-name="${escAttr(label)}" style="background:transparent;border:none;color:#9ca3af;font-size:11px;cursor:pointer;padding:0 2px;line-height:1;">✏️</button>
               ${isNew ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#ef4444;color:#fff;font-weight:700;">NEW</span>' : ''}
             </div>
           </div>
