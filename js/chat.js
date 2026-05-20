@@ -62,6 +62,7 @@ import {
   setMsgActionHandlers, allocMid,
   setQuick, updateQuickFromText,
   setBudgetCards,
+  setShapeCards,
   setBanner, setStatusText,
   initInputListeners, initDateSep, appendDateSep,
   clearMessages, clearInput,
@@ -566,6 +567,12 @@ async function send(prefilledText) {
 
     history.push({ role: 'assistant', content: reply, ts: new Date().toISOString() });
     addMsg('bot', reply);
+    /* D 패치 — 직전 턴이 가격 선택이면 AI가 뭐라 답하든 형태 카드 강제 노출.
+       AI가 형태 안 묻거나 자기가 정해버리는 회귀(공간 묻기 등) 우회. */
+    if (window._forceShapeNextTurn) {
+      window._forceShapeNextTurn = false;
+      try { setShapeCards({ inline: true }); } catch (e) { /* import 없으면 무시 */ }
+    }
     /* 견적서(케이트블랑 또는 [설치공간]+[금액] 브라켓)는 addMsg가 PNG로 렌더.
        견적 본문 트리거 오발동 방지 + 견적 뒤 후속질문(지역/할인 등)은 카드 떠야 함
        → 견적이면 followText(견적 뒤 산문)에만 updateQuickFromText 적용, 아니면 전체 적용 */

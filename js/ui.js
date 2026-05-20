@@ -1097,7 +1097,12 @@ export function setBudgetCards(opts) {
     btn.querySelector('.cb-emoji').textContent = c.emoji;
     btn.querySelector('.cb-amount').textContent = c.label;
     btn.querySelector('.cb-desc').textContent = c.sub;
-    btn.onclick = () => _sendCardValue(c.value, t.inline ? t.el : null);
+    btn.onclick = () => {
+      _sendCardValue(c.value, t.inline ? t.el : null);
+      /* D 패치 — 가격 받으면 다음 턴에 형태 카드 강제 노출.
+         AI가 형태 안 묻거나 자기가 정해버리는 회귀 차단. */
+      window._forceShapeNextTurn = true;
+    };
     wrap.appendChild(btn);
   });
   t.el.appendChild(wrap);
