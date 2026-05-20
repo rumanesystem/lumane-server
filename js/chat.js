@@ -509,8 +509,8 @@ async function send(prefilledText) {
       const exShape = parts[0] || '';
       const exUnits = parts[1] || '';
       const exOpts  = parts[2] || '';
-      // 3D 도면은 세션당 1회만 (처음 형태 고를 때 노출이 끝). AI가 또 태그 보내도 중복 안 함.
-      const alreadyShown = history.some(m => m.role === 'image');
+      // 3D 도면은 세션당 1회만. DOM 기준(ui.js setShapeCards 카드 클릭으로 띄운 것도 잡음).
+      const alreadyShown = !!document.querySelector('.img-example');
       if (!alreadyShown) {
         fetch(`${SERVER}/api/find-example?shape=${encodeURIComponent(exShape)}&units=${encodeURIComponent(exUnits)}&options=${encodeURIComponent(exOpts)}`)
           .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
@@ -568,8 +568,8 @@ async function send(prefilledText) {
     }
 
     /* B 안전망: 견적인데 이번 상담에 예시 이미지가 0건이면 견적서 [설치 공간]에서 형태 파싱해 표시.
-       3D는 세션당 1회 정책 — 이미 history에 image 있으면 견적 시 다시 안 띄움. */
-    if (_isQuoteReply && !history.some(m => m.role === 'image')) {
+       3D는 세션당 1회 정책 — DOM 기준 검사 (카드 클릭으로 띄운 것도 잡음). */
+    if (_isQuoteReply && !document.querySelector('.img-example')) {
       const _sp = reply.match(/\[설치\s*공간\][^\n]*\n?\s*([^\n]+)/);
       const _pickShape = (s) => {
         if (!s) return '';
