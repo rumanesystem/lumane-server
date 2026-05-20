@@ -1317,19 +1317,29 @@ export function updateQuickFromText(text) {
   if (/(정리해\s*드릴|이대로\s*견적|예상\s*견적\s*정리|이\s*구성으로|이런\s*구성으로|이대로\s*진행)/.test(text)) {
     setQuick(['네 정리해주세요', '조금 더 볼게요'], true); return;
   }
-  /* 색상 — AI가 특정 색을 좁혀 물을 때: 언급된 색 이름만 칩으로 (컨텍스트 맞춤) */
+  /* 색상 — 좁힘 금지(취향 존중). AI가 특정 색 2개 언급해도, 그 색이 속한 팔레트 전체를 노출. */
   const COLOR_TOKENS = ['솔리드화이트','화이트오크','샴페인골드','다크월넛','스톤그레이','진그레이','민트그린','메이플','블랙','실버','화이트'];
+  const FRAME_COLORS = new Set(['화이트','블랙','실버','샴페인골드']);
+  const SHELF_COLORS = new Set(['솔리드화이트','화이트오크','메이플','스톤그레이','진그레이','다크월넛','민트그린']);
   let _cScan = text, _cPicked = [];
   for (const _c of COLOR_TOKENS) {
     if (_cScan.includes(_c)) { _cPicked.push(_c); _cScan = _cScan.split(_c).join(' '); }
   }
   /* 견적 요약 안내문(합계/만원/배송비 등)에 색상 단어가 섞여 있어도 색상 칩 띄우지 않음 */
   const _isQuoteSummary = /(합계|만원|견적|배송비|구성으로|예상\s*견적)/.test(text);
-  /* 선반·프레임 동시 톤 질문이면 colorNarrow 건너뜀 → 아래 colorFrame이 4종 띄움.
-     단, 텍스트에 이미 특정 색이 명시된 좁힘 질문("프레임은 블랙, 선반은 다크월넛...")은 colorNarrow 유지 */
+  /* 선반·프레임 동시 톤 질문이면 아래 colorFrame이 4종 띄우게 양보 */
   const _isFrameShelfQ = /(선반이랑\s*프레임|프레임이랑\s*선반|톤)/.test(text);
   if (_cPicked.length >= 2 && !_isQuoteSummary && !_isFrameShelfQ && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) {
-    setQuick(_cPicked, true); return;
+    const _frameHit = _cPicked.filter(c => FRAME_COLORS.has(c)).length;
+    const _shelfHit = _cPicked.filter(c => SHELF_COLORS.has(c)).length;
+    if (_shelfHit >= 2 && _frameHit === 0) {
+      setQuick(['화이트오크', '솔리드화이트', '메이플', '스톤그레이', '진그레이', '다크월넛', '민트그린'], true); return;
+    }
+    if (_frameHit >= 2 && _shelfHit === 0) {
+      setQuick(['화이트', '블랙', '실버', '샴페인골드'], true); return;
+    }
+    /* 섞이거나 모호하면 계열 4종 (콘셉트 좁힘) */
+    setQuick(['화이트 계열', '그레이 계열', '우드 계열', '블랙 계열'], true); return;
   }
   /* 선반 색상 질문 — 견적서 항목 언급이 아닌 실제 질문만 */
   if (/(선반\s*색상.*어떻게|선반\s*색상.*알려|선반\s*색상.*선택|선반\s*색상.*원하|어떤\s*선반\s*색상|선반\s*색상은)/.test(text)) {

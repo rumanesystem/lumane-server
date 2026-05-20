@@ -60,15 +60,23 @@ function detectTrigger(text) {
   /* 견적 요약 확인문 — 색상 오발동 차단 우선 */
   if (/(정리해\s*드릴|이대로\s*견적|예상\s*견적\s*정리|이\s*구성으로|이런\s*구성으로|이대로\s*진행)/.test(text)) return 'confirmQuote';
 
-  /* 색상 좁힘 */
+  /* 색상 — 좁힘 금지, 팔레트 전체 노출 */
   const COLOR_TOKENS = ['솔리드화이트','화이트오크','샴페인골드','다크월넛','스톤그레이','진그레이','민트그린','메이플','블랙','실버','화이트'];
+  const FRAME_COLORS = new Set(['화이트','블랙','실버','샴페인골드']);
+  const SHELF_COLORS = new Set(['솔리드화이트','화이트오크','메이플','스톤그레이','진그레이','다크월넛','민트그린']);
   let cScan = text, cPicked = [];
   for (const c of COLOR_TOKENS) {
     if (cScan.includes(c)) { cPicked.push(c); cScan = cScan.split(c).join(' '); }
   }
   const _isQuoteSummary = /(합계|만원|견적|배송비|구성으로|예상\s*견적)/.test(text);
   const _isFrameShelfQ = /(선반이랑\s*프레임|프레임이랑\s*선반|톤)/.test(text);
-  if (cPicked.length >= 2 && !_isQuoteSummary && !_isFrameShelfQ && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) return 'colorNarrow';
+  if (cPicked.length >= 2 && !_isQuoteSummary && !_isFrameShelfQ && /[?？]|어떤|좋으세요|중에|느낌|골라|선택|어울/.test(text)) {
+    const _frameHit = cPicked.filter(c => FRAME_COLORS.has(c)).length;
+    const _shelfHit = cPicked.filter(c => SHELF_COLORS.has(c)).length;
+    if (_shelfHit >= 2 && _frameHit === 0) return 'colorShelf';
+    if (_frameHit >= 2 && _shelfHit === 0) return 'colorFrame';
+    return 'colorGeneral';
+  }
 
   /* 선반 색상 */
   if (/(선반\s*색상.*어떻게|선반\s*색상.*알려|선반\s*색상.*선택|선반\s*색상.*원하|어떤\s*선반\s*색상|선반\s*색상은)/.test(text)) return 'colorShelf';
