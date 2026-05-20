@@ -951,7 +951,7 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
 
   try {
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-haiku-4-5-20251001',  /* Sonnet → Haiku 응답 속도 개선 (5초 → 2~3초). 품질 약간 낮아질 수 있음 — 모니터링 후 필요시 롤백 */
       max_tokens: 1024,
       system: systemBlocks,
       messages: apiMessages,
