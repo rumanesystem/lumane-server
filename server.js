@@ -663,15 +663,20 @@ const SCORE_THRESHOLD = 50;
 function scoreRow(row, shape, unitsNum, optList) {
   let score = 0;
   if (shape && row.shape === shape) score += 100;
-  if (unitsNum > 0 && row.units != null) {
-    const diff = Math.abs(row.units - unitsNum);
+  /* v2 테이블 컬럼명: units → cells, options → modules (modules_normalized 우선 사용) */
+  const rowUnits = row.cells != null ? row.cells : row.units;
+  if (unitsNum > 0 && rowUnits != null) {
+    const diff = Math.abs(rowUnits - unitsNum);
     score += Math.max(0, 50 - diff * 15);
   }
   let rowOpts = [];
-  if (Array.isArray(row.options)) {
-    rowOpts = row.options;
-  } else if (typeof row.options === 'string') {
-    try { const p = JSON.parse(row.options); rowOpts = Array.isArray(p) ? p : []; } catch { rowOpts = []; }
+  const rawOpts = row.modules_normalized != null ? row.modules_normalized
+                : row.modules != null ? row.modules
+                : row.options;
+  if (Array.isArray(rawOpts)) {
+    rowOpts = rawOpts;
+  } else if (typeof rawOpts === 'string') {
+    try { const p = JSON.parse(rawOpts); rowOpts = Array.isArray(p) ? p : []; } catch { rowOpts = []; }
   }
   for (const opt of optList) {
     if (rowOpts.includes(opt)) score += 20;
@@ -695,7 +700,7 @@ app.get('/api/find-example', chatRateLimit, async (req, res) => {
   try {
     let query = supabase
       .from('dressroom_images_v2')
-      .select('url, shape, units, options');
+      .select('url, shape, cells, modules, modules_normalized');
     if (shape) query = query.eq('shape', shape);
     const { data, error } = await query;
 
