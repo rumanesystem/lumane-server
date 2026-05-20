@@ -70,6 +70,47 @@ function clearUnreadFilter() {
 }
 window.clearUnreadFilter = clearUnreadFilter;
 
+/* ── 유입 소스 통계 — 클라이언트 캐시(C) + 프리워밍(A') ──
+   period → { data, expiresAt }. TTL 60초 (서버 5분 캐시와 함께 빠른 첫 클릭/재진입 보장) */
+const _srcStatsCache = new Map();
+const _SRC_STATS_CLIENT_TTL = 60 * 1000;
+const _SRC_PERIODS = ['today', 'week', 'month', 'all'];
+
+async function _fetchSrcStats(period) {
+  /* 캐시 히트 */
+  const cached = _srcStatsCache.get(period);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+  /* 네트워크 */
+  const res = await fetch(`${SERVER}/api/admin/source-stats?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
+  if (!res.ok) throw new Error(res.status);
+  const data = await res.json();
+  _srcStatsCache.set(period, { data, expiresAt: Date.now() + _SRC_STATS_CLIENT_TTL });
+  return data;
+}
+
+function _renderSrcStats(listEl, data) {
+  if (!data.counts || data.counts.length === 0) {
+    listEl.innerHTML = '<div style="color:#9ca3af;font-size:13px;">데이터 없음</div>';
+    return;
+  }
+  const total = data.total || 0;
+  listEl.innerHTML = `
+    <div style="font-size:12px;color:#9ca3af;margin-bottom:8px;">총 방문 ${total}건</div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${data.counts.map(({ src, count }) => {
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+        return `
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="min-width:80px;font-size:13px;font-weight:600;color:#111827;">${escAdmin(src)}</div>
+            <div style="flex:1;height:8px;background:#f3f4f6;border-radius:4px;overflow:hidden;">
+              <div style="height:100%;background:#7c3aed;width:${pct}%;"></div>
+            </div>
+            <div style="min-width:60px;text-align:right;font-size:12px;color:#374151;">${count}명 (${pct}%)</div>
+          </div>`;
+      }).join('')}
+    </div>`;
+}
+
 /* ── 유입 소스 통계 로드/렌더링 ── */
 async function loadSourceStats(period = 'today') {
   // 기간 버튼 활성화 토글
@@ -81,36 +122,33 @@ async function loadSourceStats(period = 'today') {
   });
   const listEl = document.getElementById('sourceStatsList');
   if (!listEl) return;
+  /* 캐시 히트 시 '로딩 중…' 깜빡임 없이 즉시 렌더 */
+  const cached = _srcStatsCache.get(period);
+  if (cached && cached.expiresAt > Date.now()) {
+    _renderSrcStats(listEl, cached.data);
+    return;
+  }
   listEl.textContent = '로딩 중…';
   try {
-    const res = await fetch(`${SERVER}/api/admin/source-stats?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
-    if (!res.ok) throw new Error(res.status);
-    const data = await res.json();
-    if (!data.counts || data.counts.length === 0) {
-      listEl.innerHTML = '<div style="color:#9ca3af;font-size:13px;">데이터 없음</div>';
-      return;
-    }
-    const total = data.total || 0;
-    listEl.innerHTML = `
-      <div style="font-size:12px;color:#9ca3af;margin-bottom:8px;">총 방문 ${total}건</div>
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        ${data.counts.map(({ src, count }) => {
-          const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-          return `
-            <div style="display:flex;align-items:center;gap:8px;">
-              <div style="min-width:80px;font-size:13px;font-weight:600;color:#111827;">${escAdmin(src)}</div>
-              <div style="flex:1;height:8px;background:#f3f4f6;border-radius:4px;overflow:hidden;">
-                <div style="height:100%;background:#7c3aed;width:${pct}%;"></div>
-              </div>
-              <div style="min-width:60px;text-align:right;font-size:12px;color:#374151;">${count}명 (${pct}%)</div>
-            </div>`;
-        }).join('')}
-      </div>`;
+    const data = await _fetchSrcStats(period);
+    _renderSrcStats(listEl, data);
   } catch (err) {
     listEl.innerHTML = `<div style="color:#dc2626;font-size:12px;">로드 실패: ${escAdmin(err.message)}</div>`;
   }
 }
 window.loadSourceStats = loadSourceStats;
+
+/* A' — 어드민 첫 로드 시 4개 기간 병렬 프리워밍 (백그라운드, UI 영향 없음) */
+function prewarmSourceStats() {
+  _SRC_PERIODS.forEach(p => { _fetchSrcStats(p).catch(() => {}); });
+}
+window.prewarmSourceStats = prewarmSourceStats;
+/* 스크립트 로드 시 자동 발동 — 어드민이 켜지자마자 백그라운드로 캐시 채움 */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', prewarmSourceStats);
+} else {
+  prewarmSourceStats();
+}
 
 /* ── 대시보드에서 저장 상담 삭제 ── */
 async function deleteSavedConvFromDash(id, ev) {

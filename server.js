@@ -1109,7 +1109,7 @@ async function detectReturningCustomer(sess) {
 
 // ── 어드민: 유입 소스 통계 ────────────────────────────────
 const _sourceStatsCache = new Map(); // period -> { payload, expiresAt }
-const SOURCE_STATS_TTL = 60 * 1000;  // 60초
+const SOURCE_STATS_TTL = 5 * 60 * 1000;  // 5분 (어드민 통계는 실시간성보다 응답속도 우선)
 
 app.get('/api/admin/source-stats', async (req, res) => {
   const VALID_PERIODS = ['today', 'week', 'month', 'all'];
