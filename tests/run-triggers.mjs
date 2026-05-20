@@ -27,7 +27,12 @@ function detectTrigger(text) {
   /* ①②③ */
   const circled = '①②③④⑤⑥⑦⑧⑨⑩';
   const choiceLines = text.split('\n').filter(l => l.trim() && circled.includes(l.trim()[0]));
-  if (choiceLines.length >= 2) return 'circled';
+  if (choiceLines.length >= 2) {
+    const _shapeKW = /(한쪽\s*벽|한\s*벽|코너|두\s*벽|세\s*벽|세벽|마주|두\s*줄|양면|일\s*자|1\s*자|ㄱ\s*자|ㄷ\s*자|11\s*자|ㅁ\s*자)/;
+    const _shapeChoiceHits = choiceLines.filter(l => _shapeKW.test(l)).length;
+    if (_shapeChoiceHits >= 2) return 'shape';
+    return 'circled';
+  }
 
   /* 천장 (질문형) */
   if (/(천장\s*높이는?\s*[?？]|천장\s*높이.*(어떻게|얼마|되세요|되나요|알려|몇\s*(mm|cm|미터))|천장.*몇\s*(mm|cm|미터)\s*(\?|예요|인가요|되)|층고.*(어떻게|얼마|몇|되))/.test(text)) return 'ceiling';

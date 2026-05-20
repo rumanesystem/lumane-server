@@ -1006,6 +1006,8 @@ export function setShapeCards(opts) {
   }
   const grid = document.createElement('div');
   grid.className = 'cards-shape';
+  /* 카드 → API 형태값 매핑 (find-example용) */
+  const _shapeApiMap = { '1자형':'ㅡ자', 'ㄱ자형':'ㄱ자', 'ㄷ자형':'ㄷ자', '11자형':'11자' };
   SHAPE_CARDS.forEach(c => {
     const btn = document.createElement('button');
     btn.className = 'card-shape';
@@ -1013,7 +1015,22 @@ export function setShapeCards(opts) {
     btn.querySelector('.cs-icon').textContent = c.emoji;
     btn.querySelector('.cs-label').textContent = c.label;
     btn.querySelector('.cs-desc').textContent = c.sub;
-    btn.onclick = () => _sendCardValue(c.value, t.inline ? t.el : null);
+    btn.onclick = () => {
+      /* 1) 메시지 전송 (기존 동작) */
+      _sendCardValue(c.value, t.inline ? t.el : null);
+      /* 2) 코드 강제 3D 도면 fetch — AI [SHOW_EXAMPLE] 누락 대비 */
+      const _shape = _shapeApiMap[c.value];
+      if (!_shape) return;
+      fetch(`${SERVER}/api/find-example?shape=${encodeURIComponent(_shape)}&units=&options=`)
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(d => {
+          if (d.success && typeof d.url === 'string') {
+            const imgUrl = d.url.startsWith('http') ? d.url : `${SERVER}${d.url}`;
+            setTimeout(() => addImageMsg(imgUrl, `📐 ${_shape} 예시`), 600);
+          }
+        })
+        .catch(e => console.warn('형태 카드 예시 자동표시 실패:', e));
+    };
     grid.appendChild(btn);
   });
   t.el.appendChild(grid);
@@ -1257,6 +1274,10 @@ export function updateQuickFromText(text) {
   const circled = '①②③④⑤⑥⑦⑧⑨⑩';
   const choiceLines = text.split('\n').filter(l => circled.includes(l.trim()[0]));
   if (choiceLines.length >= 2) {
+    /* 선택지 내용이 형태 관련이면 SHAPE_CARDS로 라우팅 (아이콘 카드 일관 노출) */
+    const _shapeKW = /(한쪽\s*벽|한\s*벽|코너|두\s*벽|세\s*벽|세벽|마주|두\s*줄|양면|일\s*자|1\s*자|ㄱ\s*자|ㄷ\s*자|11\s*자|ㅁ\s*자)/;
+    const _shapeChoiceHits = choiceLines.filter(l => _shapeKW.test(l)).length;
+    if (_shapeChoiceHits >= 2) { setShapeCards({ inline: true }); return; }
     setQuick(choiceLines.map(l => l.trim()), true); return;
   }
 
