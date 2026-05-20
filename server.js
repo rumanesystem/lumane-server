@@ -668,6 +668,10 @@ function scoreRow(row, shape, unitsNum, optList) {
   if (unitsNum > 0 && rowUnits != null) {
     const diff = Math.abs(rowUnits - unitsNum);
     score += Math.max(0, 50 - diff * 15);
+  } else if (unitsNum === 0 && rowUnits != null) {
+    /* 사용자가 칸수 미지정 — 중간 사이즈(5~6칸) 우선해서 형태 코너가 잘 보이게 */
+    if (rowUnits >= 5 && rowUnits <= 6) score += 30;
+    else if (rowUnits >= 4 && rowUnits <= 7) score += 15;
   }
   let rowOpts = [];
   const rawOpts = row.modules_normalized != null ? row.modules_normalized
