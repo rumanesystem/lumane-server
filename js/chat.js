@@ -421,39 +421,39 @@ async function send(prefilledText) {
   clearPendingReply();
 
   /* ── 첨부 파일 먼저 업로드 ── */
+  // 첨부만 보낸 경우에도 AI 응답을 받도록 syncOnly 호출 제거. 아래 일반 /api/chat 호출이 동일 히스토리를 전송함.
+  let imageUploaded = false;
   if (hasPending) {
+    setLoading(true);  // 업로드 race 방지 — 진행 중 두 번째 전송 차단
     await uploadFilePending(async (url, name, isImage) => {
       const mid = allocMid();
       addFileMsg(url, name, isImage, mid);
       const fullUrl = url.startsWith('http') ? url : `${SERVER}${url}`;
       const content = isImage ? `[이미지]\n${fullUrl}` : `[파일: ${name}]\n${fullUrl}`;
       history.push({ role: 'user', content, mid, ts: new Date().toISOString() });
-      if (serverOnline) {
-        try {
-          await fetch(`${SERVER}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messages: historyForAPI(), sessionId: SESSION_ID, syncOnly: true }),
-          });
-        } catch { /* 무시 */ }
-      }
+      imageUploaded = true;
     });
+    // 업로드 실패 + 텍스트도 없음 → 토스트만 띄우고 종료 (멈춤 방지)
+    if (!imageUploaded && !text) { setLoading(false); return; }
   }
 
-  /* ── 텍스트가 없으면 여기서 종료 ── */
-  if (!text) return;
+  /* ── 텍스트도 첨부도 없으면 종료 (방어용, 397라인에서 이미 걸러짐) ── */
+  if (!text && !hasPending) return;
 
   const mid = allocMid();
-  // prefilledText 재시도 경로: 이미 화면에 user 버블이 있으므로 addMsg 스킵, history만 추가
-  if (!prefilledText) {
-    addMsg('user', text, { mid, replyTo });
-    clearInput();
-    setQuick([]);
+  // 텍스트가 있을 때만 사용자 버블/히스토리 추가 (첨부만 보낸 경우 위에서 이미 history.push 됨)
+  if (text) {
+    // prefilledText 재시도 경로: 이미 화면에 user 버블이 있으므로 addMsg 스킵, history만 추가
+    if (!prefilledText) {
+      addMsg('user', text, { mid, replyTo });
+      clearInput();
+      setQuick([]);
+    }
+    history.push({ role: 'user', content: text, mid, replyTo: replyTo ?? undefined, ts: new Date().toISOString() });
   }
-  history.push({ role: 'user', content: text, mid, replyTo: replyTo ?? undefined, ts: new Date().toISOString() });
 
-  /* ── 접수 확인 단계 ── */
-  if (pendingConfirm) {
+  /* ── 접수 확인 단계 (텍스트 입력 있을 때만) ── */
+  if (pendingConfirm && text) {
     const isYes = /^(네|예|ㅇ|응|맞아|접수|좋아|확인|ok|yes)/i.test(text);
     const isNo  = /수정|아니|틀|다시|고칠|변경/i.test(text);
 
