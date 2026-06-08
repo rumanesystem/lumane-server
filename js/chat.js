@@ -656,6 +656,13 @@ async function send(prefilledText) {
 
     // (자동 화면 전환 제거 — 견적서가 채팅창에서 혼자 사라지는 버그 수정)
 
+    // 견적서 출력 시 자동으로 어드민 DB에 저장 (접수 자동 처리)
+    // — 손님이 직접 [접수하기] 안 눌러도 견적서 떴으면 어드민 대시보드에 카드로 자동 등록.
+    // — 어드민이 카드 보고 직접 연락 / 카톡 채널로 안내 가능.
+    if (completedQuote) {
+      autoSaveConversation(history).catch(e => console.warn('견적 자동 저장 실패:', e.message));
+    }
+
     // 부모 페이지(2패널 레이아웃)에 수집된 고객 정보 전달
     postFieldsToParent();
 
