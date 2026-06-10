@@ -1058,16 +1058,17 @@ app.post('/api/session/register', async (req, res) => {
 
   /* [SRC 진단 로그] 새 라벨 출처 추적용 — 임시 진단 코드 (출처 파악 후 제거 예정)
      라벨이 코드 외 어디서 들어오는지 추적하기 위해
-     referer / userAgent / origin / src를 cloudtype 로그에 남김 */
+     referer / userAgent / origin / src를 cloudtype 로그에 남김.
+     헤더 길이 제한으로 악성 헤더 로그 폭증 차단. */
   if (src && typeof src === 'string' && src.trim()) {
     try {
       console.log('[SRC_RECV]', JSON.stringify({
-        src: src.trim(),
-        src2: typeof src2 === 'string' ? src2.trim() : null,
+        src: src.trim().slice(0, 100),
+        src2: typeof src2 === 'string' ? src2.trim().slice(0, 100) : null,
         sessionId,
-        userAgent: req.headers['user-agent'],
-        referer: req.headers['referer'] || req.headers['referrer'],
-        origin: req.headers['origin'],
+        userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
+        referer:   String(req.headers['referer'] || req.headers['referrer'] || '').slice(0, 300),
+        origin:    String(req.headers['origin']  || '').slice(0, 100),
         ts: new Date().toISOString(),
       }));
     } catch {}
