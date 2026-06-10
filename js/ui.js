@@ -958,6 +958,13 @@ const REGION_CARDS = [
   { value: '설치지역 전라·경상·부산',      emoji: '🌊', label: '전라·경상·부산',  sub: '배송비 10만원' },
 ];
 
+/* 신규 입주 아파트 여부 — 견적 직전 10% 할인 적용 판단용 */
+const NEW_APT_CARDS = [
+  { value: '신규아파트 맞아요',     emoji: '🆕', label: '네, 신규 입주예요',  sub: '3년 이내 새 아파트 (10% 할인)' },
+  { value: '신규아파트 아니에요',   emoji: '🙅', label: '아니요',              sub: '그 외 — 일반 견적' },
+  { value: '신규아파트 잘 모르겠어요', emoji: '❓', label: '잘 모르겠어요',    sub: '나중에 확인할게요' },
+];
+
 function _sendCardValue(value, inlineHost) {
   /* 인라인 모드: 카드 삽입 영역 제거 (말풍선은 유지) */
   if (inlineHost && inlineHost.parentNode) inlineHost.remove();
@@ -1003,6 +1010,7 @@ function _renderListCards(cards, opts) {
 
 export function setCeilingCards(opts) { _renderListCards(CEILING_CARDS, opts); }
 export function setRegionCards(opts)  { _renderListCards(REGION_CARDS,  opts); }
+export function setNewAptCards(opts)  { _renderListCards(NEW_APT_CARDS, opts); }
 
 /* 마지막 봇 메시지의 .msg-bubbles-row 안에 카드 삽입용 호스트 생성/회수
    DOM 구조: .msg-group.bot > .msg-body > .msg-bubbles-row > [.msg-bubbles, .msg-meta]
@@ -1337,6 +1345,12 @@ export function updateQuickFromText(text) {
   /* 설치 지역 — 카드 (배송비 산정용, 시/도 수준만) */
   if (/(설치\s*지역|어느\s*지역|지역.*어디|배송.*지역|어디.*거주|어디.*사세요)/.test(text)) {
     setRegionCards({ inline: true }); return;
+  }
+  /* 신규 입주 아파트 여부 — 견적 직전 10% 할인 적용 판단용 */
+  /* 견적 요약문(합계·만원·배송비 등) 섞인 경우 오발동 차단 */
+  if (!/(합계|만원|견적서|배송비|구성으로|예상\s*견적|할인\s*후)/.test(text) &&
+      /(신규\s*(입주\s*)?아파트|신축\s*아파트|신규\s*입주|입주\s*예정|새\s*아파트).*(인가요|이세요|이신가요|맞으세요|맞나요|되세요|되시나요|예요|이에요|\?|？)/.test(text)) {
+    setNewAptCards({ inline: true }); return;
   }
   /* 형태 질문 — 공간 트리거보다 위 (공간+형태 동시언급 시 형태 우선) */
   const _shapeHits = (text.match(/(일자형|1자형|ㄱ자형|ㄷ자형|11자형|ㅁ자형)/g) || []).length;
