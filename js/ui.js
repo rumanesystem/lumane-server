@@ -945,11 +945,12 @@ const OPTION_CARDS = [
 ];
 
 /* P0 신규 카드 세트 (천장 높이 / 설치 지역) — 4구간 압축 (G5) */
+/* 천장 높이는 손님이 모르는 경우가 많음 — "모름"이 부담 없는 선택으로 보이게 배치/문구 */
 const CEILING_CARDS = [
-  { value: '천장 높이 2400mm 이하',  emoji: '📏', label: '2400mm 이하',  sub: '일반 아파트' },
-  { value: '천장 높이 2400~2700mm', emoji: '📏', label: '2400~2700mm', sub: '중간 층고' },
-  { value: '천장 높이 2700mm 이상',  emoji: '📏', label: '2700mm 이상',  sub: '높은 층고' },
-  { value: '천장 높이 잘 모르겠어요', emoji: '❓', label: '잘 모르겠어요', sub: '나중에 확인' },
+  { value: '천장 높이 잘 모르겠어요', emoji: '🙆', label: '잘 모르겠어요',  sub: '괜찮아요 — 일반 아파트 기준으로 안내드려요' },
+  { value: '천장 높이 2400mm 이하',  emoji: '📏', label: '2400mm 이하',   sub: '일반 아파트 (대부분 여기 해당)' },
+  { value: '천장 높이 2400~2700mm', emoji: '📏', label: '2400~2700mm',  sub: '중간 층고' },
+  { value: '천장 높이 2700mm 이상',  emoji: '📏', label: '2700mm 이상',   sub: '높은 층고 / 신축' },
 ];
 const REGION_CARDS = [
   { value: '설치지역 서울',                emoji: '🏙️', label: '서울',            sub: '배송비 2만원' },
