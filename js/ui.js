@@ -1433,7 +1433,7 @@ export function updateQuickFromText(text) {
   }
   /* 선반 단수 질문 */
   if (/(선반.*몇\s*단|선반.*단수|몇\s*단으로|단수.*어떻게|단수.*선택|몇단)/.test(text)) {
-    setQuick(['5단', '6단', '7단', '코너 5단', '코너 6단', '코너 7단'], true); return;
+    setQuick(['🤔 선반 단수 추천해주세요', '5단', '6단', '7단', '코너 5단', '코너 6단', '코너 7단'], true); return;
   }
   if (/(개인정보\s*수집|동의해\s*주시겠어요)/.test(text)) {
     setQuick(['동의합니다', '동의하지 않습니다'], true, { allowManual: false }); return;
