@@ -721,11 +721,12 @@ async function send(prefilledText) {
    첫 인사
 ================================================================ */
 function greet() {
-  /* 킵3 오프닝 — 인사 + 예산 질문 + 예산 카드
+  /* 오프닝 — 인사 + 메뉴 안내 + 메뉴 칩
+     손님이 자기 페이스로 진입할 수 있도록 가격 직질문 대신 메뉴 칩 노출
      서버 호출 없이 로컬 메시지 2개를 history에 push해서
-     사용자가 예산 카드를 선택하면 서버는 그 컨텍스트로 다음 응대 시작 */
+     사용자가 칩을 선택하면 서버는 그 컨텍스트로 다음 응대 시작 */
   const msg1 = '안녕하세요! 저는 케이트블랑 드레스룸 상담원 루마네예요 😊\n원하시는 드레스룸 구성을 빠르게 안내해드릴게요.';
-  const msg2 = '혹시 생각하신 금액이 얼마쯤이세요?';
+  const msg2 = '어떻게 도와드릴까요? 편하게 골라주세요';
 
   setLoading(true);
   setTimeout(() => {
@@ -741,9 +742,14 @@ function greet() {
         saveHistory();
         setLoading(false);
         try {
-          setBudgetCards({ inline: true });
+          setQuick([
+            '💰 가격대 추천받기',
+            '🪟 형태별 예시 보기',
+            '📸 사진 보내고 추천받기',
+            '🤷 그냥 둘러볼게요',
+          ], true);
         } catch (e) {
-          console.error('[greet] setBudgetCards 실패:', e);
+          console.error('[greet] menu chips 실패:', e);
         }
       }, 500);
     }, 300);
