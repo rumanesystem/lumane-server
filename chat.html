@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Pretendard:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" />
   <link rel="stylesheet" href="css/base.css" />
-  <link rel="stylesheet" href="css/chat.css?v=20260611e" />
+  <link rel="stylesheet" href="css/chat.css?v=20260611f" />
   <style>
     /* 킵3 디자인 — 채팅 페이지에서 상단 site-header 제거, 사이드바로 흡수 */
     .site-header { display: none !important; }
@@ -30,6 +30,17 @@
       height: 100dvh !important;
       z-index: 9999 !important;
       flex-direction: column !important;
+      background: #faf5ec !important;
+      box-shadow: 4px 0 24px rgba(0,0,0,.15) !important;
+      overflow-y: auto !important;
+    }
+    /* 사이드바 열렸을 때 뒷배경 어둡게 (외부 클릭 영역 시각화) */
+    body.is-mobile-view.pc-panel-mobile-open::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.4);
+      z-index: 9998;
     }
     body.is-mobile-view .page { flex-direction: column !important; }
     body.is-mobile-view .shell { width: 100% !important; max-width: 100% !important; }
