@@ -187,6 +187,23 @@ function renderLiveSessionList(sessions) {
   if (!container) { renderDashboardSessions(sessions); return; }
   const seenNow = _getSeenSessions();
 
+  /* 같은 손님(visitor_key) 묶기 — 라이브 + 저장 통합 카운트 */
+  const _visitorKeyCount = new Map();
+  sessions.forEach(s => {
+    const vk = s.visitor_key;
+    if (vk) _visitorKeyCount.set(vk, (_visitorKeyCount.get(vk) || 0) + 1);
+  });
+  savedConvs.forEach(c => {
+    const vk = c.visitor_key;
+    if (vk) _visitorKeyCount.set(vk, (_visitorKeyCount.get(vk) || 0) + 1);
+  });
+  const _sameCustomerBadge = (vk) => {
+    if (!vk) return '';
+    const cnt = _visitorKeyCount.get(vk) || 0;
+    if (cnt <= 1) return '';
+    return `<span title="같은 손님 세션 ${cnt}개" style="font-size:10px;padding:1px 6px;border-radius:8px;background:#ddd6fe;color:#5b21b6;font-weight:700;cursor:pointer;" onclick="event.stopPropagation();window.showRelatedSessions&&window.showRelatedSessions('${escAttr(vk)}')">👥 ${cnt}회</span>`;
+  };
+
   // ── 진행 중인 세션 ──
   const liveHtml = sessions.map(s => {
     const isSelected = String(s.id) === String(liveSelectedId);
@@ -214,6 +231,7 @@ function renderLiveSessionList(sessions) {
               ${isNew ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#ef4444;color:#fff;font-weight:700;">NEW</span>' : ''}
               ${s.unreadAdminCount > 0 ? `<span title="고객이 안 읽은 내 답장 ${s.unreadAdminCount}개" style="font-size:10px;padding:1px 6px;border-radius:8px;background:#fbbf24;color:#78350f;font-weight:700;">📬 ${s.unreadAdminCount}</span>` : ''}
               ${s.isTest ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#fef3c7;color:#92400e;font-weight:700;">테스트</span>' : ''}
+              ${_sameCustomerBadge(s.visitor_key)}
             </div>
             <div style="font-size:11px;color:#9ca3af;">${[s.region, s.layout, `💬 ${msgCount}개`].filter(Boolean).join(' · ') || `💬 ${msgCount}개 메시지`}</div>
           </div>
@@ -254,6 +272,7 @@ function renderLiveSessionList(sessions) {
               ${escAdmin(label)}
               <button type="button" title="이름 수정" class="js-rename-btn" data-kind="conversation" data-id="${escAttr(c.id)}" data-name="${escAttr(label)}" style="background:transparent;border:none;color:#9ca3af;font-size:11px;cursor:pointer;padding:0 2px;line-height:1;">✏️</button>
               ${isNew ? '<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#ef4444;color:#fff;font-weight:700;">NEW</span>' : ''}
+              ${_sameCustomerBadge(c.visitor_key)}
             </div>
           </div>
           <span style="font-size:11px;color:#9ca3af;flex-shrink:0;white-space:nowrap;">${timeStr}</span>
@@ -349,5 +368,57 @@ window.selectSavedConvInPanel = function(convId) {
   if (window.innerWidth < 768) {
     document.querySelector('.live-split')?.classList.add('session-selected');
     setTimeout(() => { if (msgs) msgs.scrollTop = msgs.scrollHeight; }, 50);
+  }
+};
+
+/* 같은 손님(visitor_key) 모달 — 옛 세션 묶음 보기 */
+let _relatedModalEscHandler = null;
+window.showRelatedSessions = function(visitorKey) {
+  if (!visitorKey) return;
+  // 중복 오픈 방지 — 이미 열려있으면 제거 후 다시 생성
+  if (document.getElementById('relatedSessionsOverlay')) {
+    window.closeRelatedModal();
+  }
+  const live = (typeof _cachedLiveSessions !== 'undefined' ? _cachedLiveSessions : []).filter(s => s.visitor_key === visitorKey);
+  const saved = (typeof _cachedConversations !== 'undefined' ? _cachedConversations : []).filter(c => c.visitor_key === visitorKey);
+  const total = live.length + saved.length;
+  if (total === 0) return;
+
+  const liveItems = live.map(s => `
+    <div onclick="window.selectLiveSession&&window.selectLiveSession('${escAttr(s.id)}',true);window.closeRelatedModal();" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer;background:#f0fdf4;">
+      <div style="font-size:13px;font-weight:600;">${escAdmin(s.customerName||'(이름 없음)')} <span style="font-size:10px;padding:1px 5px;border-radius:6px;background:#22c55e;color:#fff;">진행 중</span></div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px;">${[s.region, s.layout, `💬 ${s.messageCount||0}개`].filter(Boolean).join(' · ')}</div>
+    </div>`).join('');
+  const savedItems = saved.map(c => `
+    <div onclick="window.selectSavedConvInPanel&&window.selectSavedConvInPanel('${escAttr(c.id)}');window.closeRelatedModal();" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;cursor:pointer;background:#fff;">
+      <div style="font-size:13px;font-weight:600;">${escAdmin((typeof getConvLabel === 'function' ? getConvLabel(c) : (c.customer_name || '(이름 없음)')))}</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:2px;">${[c.region, c.layout, `💬 ${c.message_count||0}개`].filter(Boolean).join(' · ')} · ${c.saved_at ? new Date(c.saved_at).toLocaleString('ko-KR') : ''}</div>
+    </div>`).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'relatedSessionsOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  overlay.onclick = (e) => { if (e.target === overlay) window.closeRelatedModal(); };
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:480px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">
+      <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;justify-content:space-between;">
+        <div style="font-size:15px;font-weight:700;">👥 같은 손님 세션 ${total}개</div>
+        <button onclick="window.closeRelatedModal()" style="background:transparent;border:none;font-size:20px;cursor:pointer;color:#6b7280;">×</button>
+      </div>
+      <div style="padding:16px 20px;overflow-y:auto;">
+        ${liveItems}${savedItems}
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  // ESC 키로 닫기
+  _relatedModalEscHandler = (e) => { if (e.key === 'Escape') window.closeRelatedModal(); };
+  document.addEventListener('keydown', _relatedModalEscHandler);
+};
+window.closeRelatedModal = function() {
+  document.getElementById('relatedSessionsOverlay')?.remove();
+  if (_relatedModalEscHandler) {
+    document.removeEventListener('keydown', _relatedModalEscHandler);
+    _relatedModalEscHandler = null;
   }
 };
