@@ -335,6 +335,9 @@ window.selectSavedConvInPanel = function(convId) {
       📋 상세보기
     </button>`;
 
+  // 어드민 메모 로드 (저장된 대화이므로 conv.id 사용)
+  if (typeof window.lvLoadMemos === 'function') window.lvLoadMemos(convId);
+
   // 라이브 전용 UI 숨기기
   const replyBar = document.getElementById('adminReplyBar');
   if (replyBar) replyBar.style.display = 'none';

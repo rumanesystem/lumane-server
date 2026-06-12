@@ -35,6 +35,9 @@ async function selectLiveSession(sessionId, byClick = false) {
   setLiveSelectedByClick(byClick);
   if (byClick) markSessionSeen(sessionId);
 
+  // 라이브 세션은 conv_id 없음 → 메모 패널 숨김
+  if (typeof window.lvHideMemoPanel === 'function') window.lvHideMemoPanel();
+
   await fetchLiveSessionMsgs();
 
   // await 동안 다른 세션이 선택됐으면 타이머 설정하지 않음 (stale 방지)

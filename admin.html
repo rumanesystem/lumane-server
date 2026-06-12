@@ -314,6 +314,23 @@
           <div id="liveSummaryBody" style="padding:0 16px 12px;"></div>
         </div>
 
+        <!-- 📝 어드민 메모 패널 (라이브 패널용, 접을 수 있음) -->
+        <div id="lvMemoPanel" style="border-bottom:1px solid #e5e7eb;background:#fefce8;display:none;">
+          <div onclick="toggleLvMemoPanel()" style="padding:8px 16px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;">
+            <span style="font-size:12px;font-weight:600;color:#854d0e;letter-spacing:.3px;">📝 어드민 메모 <span id="lvMemoCount" style="color:#a16207;font-weight:500;"></span></span>
+            <span id="lvMemoChevron" style="font-size:11px;color:#a16207;transition:transform .2s;">▼</span>
+          </div>
+          <div id="lvMemoBody" style="display:none;padding:0 16px 12px;">
+            <div id="lvMemoList" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;"></div>
+            <div style="display:flex;gap:6px;">
+              <textarea id="lvMemoInput" placeholder="메모 작성... (Shift+Enter 줄바꿈)" rows="2"
+                style="flex:1;resize:vertical;min-height:36px;border:1px solid #fde047;border-radius:8px;padding:7px 10px;font-size:12.5px;line-height:1.4;outline:none;font-family:inherit;box-sizing:border-box;background:#fff;"
+                onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();window.lvAddMemo&&window.lvAddMemo();}"></textarea>
+              <button onclick="window.lvAddMemo&&window.lvAddMemo()" style="background:#ca8a04;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;cursor:pointer;white-space:nowrap;flex-shrink:0;">+ 추가</button>
+            </div>
+          </div>
+        </div>
+
         <!-- 채팅 메시지 영역 -->
         <div style="flex:1;overflow:hidden;position:relative;">
           <div id="liveMsgs" style="height:100%;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:10px;background:#f9fafb;">
