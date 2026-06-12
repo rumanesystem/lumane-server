@@ -1087,8 +1087,12 @@ app.post('/api/session/register', async (req, res) => {
   if (nickname && typeof nickname === 'string') {
     const trimmed = nickname.trim().slice(0, 20);
     sess.nickname = trimmed;
-    sess.customerName = trimmed;
-    sess.customerNameIsTemp = true;
+    // 어드민이 이름을 잠갔으면(customerNameIsTemp === false) 클라이언트 닉네임으로 덮어쓰지 않음
+    // (대화 중 손님이 재등록 폴링 보낼 때 이름 롤백 방지)
+    if (sess.customerNameIsTemp !== false) {
+      sess.customerName = trimmed;
+      sess.customerNameIsTemp = true;
+    }
   }
   if (isTest === true) sess.isTest = true;
   // 유입 소스 저장 (메모리 + DB)
