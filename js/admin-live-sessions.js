@@ -257,6 +257,11 @@ function renderLiveSessionList(sessions) {
             </div>
           </div>
           <span style="font-size:11px;color:#9ca3af;flex-shrink:0;white-space:nowrap;">${timeStr}</span>
+          <button type="button" title="대화 삭제 (휴지통으로)"
+            onclick="deleteSavedConvFromDash('${escAttr(c.id)}', event)"
+            style="flex-shrink:0;background:transparent;border:none;color:#9ca3af;font-size:14px;cursor:pointer;padding:2px 4px;border-radius:4px;line-height:1;"
+            onmouseover="this.style.background='#fee2e2';this.style.color='#dc2626'"
+            onmouseout="this.style.background='transparent';this.style.color='#9ca3af'">🗑</button>
         </div>
         <div style="font-size:11px;color:#9ca3af;padding-left:26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escAdmin(sub)}</div>
       </div>`;
