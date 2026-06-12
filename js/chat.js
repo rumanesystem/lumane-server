@@ -92,7 +92,6 @@ const HISTORY_KEY  = '루마네_히스토리';
 const ARCHIVE_KEY  = '루마네_히스토리_아카이브';
 
 const HISTORY_TS_KEY = '루마네_히스토리_시각';
-const SESSION_EXPIRE = 60 * 60 * 1000; // 1시간
 
 function saveHistory() {
   try {
@@ -105,12 +104,6 @@ function loadHistory() {
   try {
     return (JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')).filter(m => !m.injected);
   } catch { return []; }
-}
-
-function isSessionExpired() {
-  const ts = localStorage.getItem(HISTORY_TS_KEY);
-  if (!ts) return true;
-  return Date.now() - Number(ts) > SESSION_EXPIRE;
 }
 
 const ARCHIVE_TTL = 7 * 24 * 60 * 60 * 1000; // 7일
@@ -198,6 +191,18 @@ async function checkServerSilent() {
   } catch { /* 무시 */ }
 }
 
+/* visitor_key 가져오기 (재방문 추적용) — site.js와 동일 키 사용. 없으면 새로 생성 */
+function _getVisitorKey() {
+  try {
+    let v = localStorage.getItem('루마네_방문자키') || '';
+    if (!v) {
+      v = 'v_' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      localStorage.setItem('루마네_방문자키', v);
+    }
+    return v;
+  } catch { return ''; }
+}
+
 /* 세션 등록 + 현재 히스토리 동기화 */
 async function registerSessionWithHistory() {
   try {
@@ -205,7 +210,7 @@ async function registerSessionWithHistory() {
     await fetch(`${SERVER}/api/session/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: SESSION_ID, nickname: userNickname, isTest: IS_TEST, src: SRC, src2: SRC2 }),
+      body: JSON.stringify({ sessionId: SESSION_ID, nickname: userNickname, isTest: IS_TEST, src: SRC, src2: SRC2, visitor_key: _getVisitorKey() }),
     });
     // 히스토리가 있으면 /api/chat으로 동기화 (빈 응답 OK)
     if (history.length > 0) {
@@ -226,7 +231,7 @@ async function registerSession() {
     await fetch(`${SERVER}/api/session/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: SESSION_ID, nickname: userNickname, isTest: IS_TEST, src: SRC, src2: SRC2 }),
+      body: JSON.stringify({ sessionId: SESSION_ID, nickname: userNickname, isTest: IS_TEST, src: SRC, src2: SRC2, visitor_key: _getVisitorKey() }),
     });
   } catch { /* 무시 */ }
 }
@@ -937,16 +942,7 @@ async function startChat() {
   checkServer().then(async () => {
     const savedHistory = loadHistory();
 
-    if (savedHistory.length > 0 && isSessionExpired()) {
-      /* ── 1시간 이상 경과 → 아카이브 후 새 채팅 ── */
-      history = savedHistory;
-      archiveCurrent();
-      history = [];
-      clearHistory();
-      clearMessages();
-      greet();
-      if (serverOnline) { registerSession(); startPolling(); }
-    } else if (savedHistory.length > 0) {
+    if (savedHistory.length > 0) {
       /* ── 새로고침 복원: 저장된 대화 화면에 다시 표시 ── */
       history = savedHistory;
       try {
