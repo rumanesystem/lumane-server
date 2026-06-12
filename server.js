@@ -1931,6 +1931,57 @@ app.get('/api/admin/conversations/:id', async (req, res) => {
 
 // (삭제: /api/admin/conversations/:id/resend-notion — 어드민 UI에서 Notion 재전송 버튼 제거 후 잔재, 클라이언트 호출처 0건)
 
+// ── 어드민: 상담 메모 (누적, 시간순) ─────────────────────────
+// GET    /api/admin/conversations/:id/memos    — 목록 조회
+// POST   /api/admin/conversations/:id/memos    — 메모 추가 (body)
+// DELETE /api/admin/memos/:memoId              — 개별 메모 삭제
+app.get('/api/admin/conversations/:id/memos', requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('conversation_memos')
+      .select('id, conversation_id, body, created_at')
+      .eq('conversation_id', req.params.id)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    res.json({ memos: data || [] });
+  } catch (err) {
+    console.error(`[FAIL_LIST_MEMOS] conv_id=${req.params.id} err=${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/conversations/:id/memos', requireAdmin, async (req, res) => {
+  const body = (typeof req.body?.body === 'string' ? req.body.body : '').trim().slice(0, 2000);
+  if (!body) return res.status(400).json({ error: '메모 내용이 비어있습니다.' });
+  try {
+    const { data, error } = await supabase
+      .from('conversation_memos')
+      .insert({ conversation_id: req.params.id, body })
+      .select('id, conversation_id, body, created_at')
+      .maybeSingle();
+    if (error) throw error;
+    res.json({ ok: true, memo: data });
+  } catch (err) {
+    console.error(`[FAIL_ADD_MEMO] conv_id=${req.params.id} err=${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/admin/memos/:memoId', requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('conversation_memos')
+      .delete()
+      .eq('id', req.params.memoId);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(`[FAIL_DELETE_MEMO] memo_id=${req.params.memoId} err=${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── 어드민: 저장된 상담 삭제 ─────────────────────────────────
 // H1 fix: 자동 폴백으로 어느 테이블에 있든 정확히 찾아 삭제
 app.delete('/api/admin/conversations/:id', requireAdmin, async (req, res) => {
