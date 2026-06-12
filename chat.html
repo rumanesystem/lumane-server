@@ -236,13 +236,7 @@
         ✏️ 새 상담
       </button>
       <button class="h-search-btn" onclick="toggleSearch()" title="채팅 검색">🔍</button>
-      <div class="h-export-wrap">
-        <button class="h-export-btn" onclick="toggleExportMenu()" title="대화 저장">💾</button>
-        <div id="exportMenu" class="export-menu" style="display:none;">
-          <button type="button" onclick="copyChatLink()">🔗 다시 보기 링크 복사</button>
-          <button type="button" onclick="downloadChatText()">📄 텍스트로 저장</button>
-        </div>
-      </div>
+      <button class="h-export-btn" onclick="downloadChatText()" title="대화 저장 (다시 보기 링크 포함)">💾</button>
     </header>
 
     <!-- 채팅 검색 바 -->

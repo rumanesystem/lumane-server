@@ -1768,8 +1768,7 @@ mark.search-hl-active {
 .header .h-export-btn:hover { background: #faf5ec; border-color: #e8d5b0; }
 .header .h-history-text { color: #6b6b6b; }
 
-/* 대화 저장 메뉴 (D-약 + A) */
-.h-export-wrap { position: relative; display: inline-block; }
+/* 대화 저장 버튼 (A+D 통합: .txt 안에 다시 보기 링크 포함) */
 .h-export-btn {
   font-size: 16px;
   padding: 5px 9px;
@@ -1777,35 +1776,8 @@ mark.search-hl-active {
   cursor: pointer;
   line-height: 1;
 }
-.export-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 200px;
-  background: #fff;
-  border: 1px solid #ebe6df;
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0,0,0,.12);
-  padding: 6px;
-  z-index: 200;
-}
-.export-menu button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border: none;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 13.5px;
-  color: #1a1a1a;
-  cursor: pointer;
-  transition: background .12s;
-}
-.export-menu button:hover { background: #faf5ec; }
 @media (max-width: 480px) {
   .h-export-btn { padding: 5px 7px; font-size: 15px; }
-  .export-menu { min-width: 180px; font-size: 13px; }
 }
 
 /* 헤더용 골드 아바타 (h-av는 기존 코드 유지, 새 .hd-avatar 사용) */
