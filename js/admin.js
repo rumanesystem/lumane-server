@@ -330,7 +330,7 @@ async function loadQuotes() {
     const res  = await fetch(`${SERVER}/api/quotes`, { headers: adminHeaders() });
     if (!res.ok) throw new Error(`서버 오류 ${res.status}`);
     const data = await res.json();
-    allQuotes = data.quotes || [];
+    allQuotes = (data.quotes || []).slice().sort((a, b) => new Date(b.접수시간 || 0) - new Date(a.접수시간 || 0));
 
     // 새 견적 토스트 알림
     if (allQuotes.length > lastQuoteCount && lastQuoteCount > 0) {
