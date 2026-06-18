@@ -571,7 +571,7 @@ function updateQuoteList(quotes) {
     return;
   }
 
-  container.innerHTML = [...list].reverse().map(q => {
+  container.innerHTML = list.map(q => {
     const isAI = q.출처 === 'AI상담';
     const sourceBadge = isAI
       ? `<span style="background:#ede9fe;color:#7c3aed;font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;">🤖 AI상담</span>`
