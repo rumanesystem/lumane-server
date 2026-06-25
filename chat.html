@@ -237,6 +237,7 @@
       </button>
       <button class="h-search-btn" onclick="toggleSearch()" title="채팅 검색">🔍</button>
       <button class="h-export-btn" onclick="downloadChatText()" title="대화 저장 (다시 보기 링크 포함)">💾</button>
+      <a class="h-kakao-btn" href="https://pf.kakao.com/_qbxjwxb/chat" target="_blank" rel="noopener noreferrer" aria-label="카카오톡 채널 상담 (새 탭으로 열림)" title="카카오톡 채널 상담">💬</a>
     </header>
 
     <!-- 채팅 검색 바 -->
@@ -419,12 +420,6 @@
 
     <!-- 채팅 뷰 -->
     <div id="chatView" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
-      <!-- 카톡 상담 바로가기 배너 -->
-      <a class="kakao-banner" href="https://pf.kakao.com/_qbxjwxb/chat" target="_blank" rel="noopener noreferrer" aria-label="카카오톡으로 상담사와 직접 상담받기 (새 탭으로 열림)">
-        <span class="kakao-banner-icon">💬</span>
-        <span class="kakao-banner-text">카카오톡으로 상담사와 직접 상담받기</span>
-        <span class="kakao-banner-arrow">›</span>
-      </a>
       <div class="messages" id="messages">
         <div class="date-sep" id="dateSep"></div>
       </div>

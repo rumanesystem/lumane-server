@@ -1777,41 +1777,27 @@ mark.search-hl-active {
   line-height: 1;
 }
 
-/* 카톡 상담 바로가기 배너 (채팅 영역 상단 고정) */
-.kakao-banner {
-  display: flex;
+/* 카카오 채널 상담 링크 (헤더 고정) */
+.h-kakao-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  margin: 8px 12px 0;
-  padding: 10px 14px;
-  background: linear-gradient(135deg, #FEE500 0%, #ffd900 100%);
-  border: 1px solid #f4d800;
-  border-radius: 12px;
+  justify-content: center;
+  background: #FEE500;
+  border: 1.5px solid #f4d800;
   color: #3c1e1e;
-  font-size: 13.5px;
-  font-weight: 600;
-  text-decoration: none;
+  font-size: 16px;
+  padding: 5px 9px;
+  border-radius: 8px;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(254,229,0,.25);
-  transition: transform .12s, box-shadow .12s;
-  flex-shrink: 0;
+  line-height: 1;
+  text-decoration: none;
+  transition: background .15s, border-color .15s;
 }
-.kakao-banner:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(254,229,0,.4);
-}
-.kakao-banner:focus-visible {
-  outline: 2px solid #3c1e1e;
-  outline-offset: 2px;
-}
-.kakao-banner-icon { font-size: 18px; line-height: 1; flex-shrink: 0; }
-.kakao-banner-text { flex: 1; min-width: 0; }
-.kakao-banner-arrow { font-size: 18px; opacity: .55; flex-shrink: 0; }
+.h-kakao-btn:hover { background: #ffd900; border-color: #e6c800; }
 
 @media (max-width: 480px) {
   .h-export-btn { padding: 5px 7px; font-size: 15px; }
-  .kakao-banner { margin: 6px 10px 0; padding: 9px 12px; font-size: 13px; }
-  .kakao-banner-icon, .kakao-banner-arrow { font-size: 16px; }
+  .h-kakao-btn  { padding: 5px 7px; font-size: 15px; }
 }
 
 /* 헤더용 골드 아바타 (h-av는 기존 코드 유지, 새 .hd-avatar 사용) */
