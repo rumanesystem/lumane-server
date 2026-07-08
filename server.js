@@ -2298,10 +2298,10 @@ app.post('/api/quote', chatRateLimit, async (req, res) => {
 
     // 입력 화이트리스트 + 길이 제한
     const str = (v, max = 200) => (typeof v === 'string' ? v.slice(0, max) : '');
-    const num = (v, max = 2000) => {
+    const num = (v) => {
       const n = parseFloat(v);
       if (!Number.isFinite(n) || n < 0) return 0;
-      return Math.min(n, max);
+      return n;
     };
 
     // 전화번호 기본 형식 검증 (숫자·하이픈·공백·괄호·+ 만 허용, 5~30자)
