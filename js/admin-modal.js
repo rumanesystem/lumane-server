@@ -205,7 +205,7 @@ async function saveChanges() {
 
   if (serverOnline) {
     try {
-      const res = await fetch(`${SERVER}/api/quotes/${currentQuoteId}`, {
+      const res = await adminFetch(`${SERVER}/api/quotes/${currentQuoteId}`, {
         method:  'PATCH',
         headers: adminHeaders(),
         body:    JSON.stringify({ status, manager, memo, special, followup }),

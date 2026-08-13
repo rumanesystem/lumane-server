@@ -28,7 +28,7 @@
  * — 라이브 탭 밖에서도 새 손님 알림 뱃지 유지
  */
 function startBgPolling() {
-  if (bgPollTimer) return;
+  if (!isAdminAuthActive() || bgPollTimer) return;
   // 이미 로드된 경우 재로드 생략 (서버 저장 지연 시 메모리 최신값이 덮어쓰여지는 것 방지)
   if (!_seenCountsLoaded) _loadSeenCounts();
   loadAdminSettings();
@@ -61,7 +61,7 @@ function startBgPolling() {
 
     // ── 세션 카운트 확인 → 라이브 탭 뱃지 + 대시보드 업데이트 ──
     try {
-      const res = await fetch(`${SERVER}/api/admin/sessions`, { headers: adminHeaders() });
+      const res = await adminFetch(`${SERVER}/api/admin/sessions`, { headers: adminHeaders() });
       if (!res.ok) return;
       const data = await res.json();
       const sessions = data.sessions || [];
@@ -97,7 +97,7 @@ function stopBgPolling() {
  * 라이브 세션 목록 폴링 시작 (탭 진입 시) — 1초 간격
  */
 function startLivePolling() {
-  if (livePollTimer) return;
+  if (!isAdminAuthActive() || livePollTimer) return;
   stopBgPolling(); // live 탭에선 빠른 폴링이 대신함
   fetchLiveSessions();
   livePollTimer = setInterval(fetchLiveSessions, 1000);
@@ -128,7 +128,7 @@ async function fetchLiveSessions() {
   // 백그라운드 탭에선 폴링 스킵
   if (typeof document !== 'undefined' && document.hidden) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/sessions`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/sessions`, { headers: adminHeaders() });
     if (!res.ok) return;
     const data = await res.json();
     const sessions = data.sessions || [];
@@ -320,6 +320,7 @@ window.selectSavedConvInPanel = function(convId) {
   markSessionSeen(convId);
 
   // 끝난 대화도 난입 가능하도록 liveSelectedId에 session_id 세팅
+  // session_id 없으면 난입 불가 — null로 둠 (takeoverSession이 알아서 처리)
   liveSelectedId = conv.session_id || null;
 
   const label   = getConvLabel(conv);

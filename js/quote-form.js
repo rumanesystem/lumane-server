@@ -4,6 +4,17 @@
 
 window._selectedFile = null;
 
+function uuidV4() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // ── 개인정보 토글 ──────────────────────────────
 function togglePrivacy() {
   const detail = document.getElementById('privacy-detail');
@@ -24,7 +35,7 @@ function onFileSelected(input) {
   const file = input.files[0];
   if (!file) return;
 
-  // 사전 검증 — 형식·크기 (압축은 서버 전 폼 제출 단계에서 처리하지만, 원본이 너무 크면 미리 알림)
+  // 사전 검증 — 형식·크기
   if (!/^image\/(jpeg|png|webp)$/.test(file.type)) {
     alert('JPG, PNG, WebP 이미지만 첨부할 수 있어요.');
     input.value = '';
@@ -119,6 +130,9 @@ function validateQuoteForm() {
   return valid;
 }
 
+let quoteRequestId = null;
+let quoteRequestFingerprint = null;
+
 // ── 폼 제출 ───────────────────────────────────
 async function submitQuote(event) {
   event.preventDefault();
@@ -165,10 +179,15 @@ async function submitQuote(event) {
       privacy_agreed: true,
       status:         '접수',
       file_name:      fileName || '',
-      has_photo:      fileName ? '사진있음' : '',
-      /* M1 fix: 압축된 사진 데이터(base64 dataURL) 같이 전송 — 서버에서 Storage 업로드 후 URL을 request_memo에 첨부 */
       file_data:      fileData || '',
+      has_photo:      fileName ? '사진있음' : '',
     };
+    const fingerprint = JSON.stringify(textPayload);
+    if (!quoteRequestId || quoteRequestFingerprint !== fingerprint) {
+      quoteRequestId = uuidV4();
+      quoteRequestFingerprint = fingerprint;
+    }
+    textPayload.request_id = quoteRequestId;
 
     const res = await fetch(apiUrl('api/quote'), {
       method: 'POST',
@@ -192,6 +211,8 @@ async function submitQuote(event) {
     const successEl = document.getElementById('quote-success');
     successEl.classList.add('show');
     successEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    quoteRequestId = null;
+    quoteRequestFingerprint = null;
 
   } catch (err) {
     console.error('[QUOTE_SUBMIT_ERR]', err && err.message);
@@ -203,6 +224,8 @@ async function submitQuote(event) {
 
 // ── 폼 초기화 ─────────────────────────────────
 function resetQuoteForm() {
+  quoteRequestId = null;
+  quoteRequestFingerprint = null;
   const form    = document.getElementById('quote-form');
   const success = document.getElementById('quote-success');
   if (form) {

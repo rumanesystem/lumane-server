@@ -8,29 +8,63 @@ require('dotenv').config(); // .env 파일 로드
 
 const express   = require('express');
 const cors      = require('cors');
-const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
+const { rateLimit } = require('express-rate-limit');
 const Anthropic = require('@anthropic-ai/sdk');
-const { createClient } = require('@supabase/supabase-js');
 const { Client: NotionClient } = require('@notionhq/client');
+const { createClient } = require('@supabase/supabase-js');
 const multer = require('multer');
+const { executeSupabase } = require('./lib/supabase-reliability');
+const {
+  ConversationContractError,
+  acceptClientEvent,
+  appendServerMessage,
+  findReply,
+  legacyHistoryToEvent,
+  normalizeStoredMessages,
+} = require('./lib/conversation-contract');
+const { SessionSerializer } = require('./lib/session-serializer');
+const {
+  SESSION_IDLE_TTL_MS,
+  SESSION_RECOVERY_TTL_MS,
+  isIdleSession,
+  isRecoverableSession,
+  recoverRuntimeState,
+} = require('./lib/session-recovery');
+const { insertIdempotentQuote } = require('./lib/quote-storage');
+const { runOptionalSync } = require('./lib/optional-sync');
+const { createAdminAuth, createAdminPageHandler } = require('./lib/admin-auth');
+const {
+  assertSafeExternalUrl,
+  rateLimitKey,
+  readTextLimited,
+  uploadTypeFor,
+  validateUpload,
+} = require('./lib/security-boundaries');
 const AdmZip = require('adm-zip');
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const dns = require('dns').promises;
 
+const notion = new NotionClient({ auth: process.env.NOTION_TOKEN });
+const NOTION_DB_ID = process.env.NOTION_DB_ID || '221b622e-5115-4d07-b1fa-ed7fa52c6895';
+
 // ── Supabase 클라이언트 ───────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SECRET_KEY
+  process.env.SUPABASE_SECRET_KEY,
+  { db: { schema: process.env.DB_SCHEMA || 'public' } }
 );
 
-// ── Notion 클라이언트 ─────────────────────────────────────────
-const notion = new NotionClient({ auth: process.env.NOTION_TOKEN });
-const NOTION_DB_ID = '221b622e-5115-4d07-b1fa-ed7fa52c6895'; // 상담 기록 DB
+// customer 스키마 전용 클라이언트 (고객 DB 연동)
+const supabaseCustomer = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SECRET_KEY,
+  { db: { schema: 'customer' } }
+);
 
 const app  = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // ── Anthropic 클라이언트 ──────────────────────────────────────
 // .env 파일에 ANTHROPIC_API_KEY=sk-ant-... 로 설정하거나
@@ -53,20 +87,6 @@ function getSystemPrompt() {
 자신이 AI·챗봇·인공지능임을 절대 먼저 밝히지 않는다. 고객이 직접 물어볼 경우에만 솔직하게 답한다.
 자기소개 시 "저는 케이트블랑 드레스룸 상담을 담당하고 있는 루마네입니다" 형식으로만 소개한다.
 
-🚨🚨🚨 **절대 금지 규칙 (모든 지침보다 최우선 — 위반 시 즉시 잘못된 응답)** 🚨🚨🚨
-
-[금지 1] "어느 공간에 설치?" / "어떤 공간?" / "공간이 어떤 느낌?" / "어디에 설치?" / "안방·거실·베란다 같은 식으로?" — **이 의도의 모든 표현 절대 금지**. 견적에 불필요.
-
-[금지 2] 고객이 형태(1자/ㄱ자/ㄷ자/11자) **직접 선택하기 전**에 AI가 형태 추천·결정 금지. "1자형으로 잘 어울려요" 같은 자가 추천 금지.
-
-[금지 3] "걸음 수 / 뼘 / 평" 같은 대안 단위로 치수 묻기 금지. 치수 모른다고 하면 → 받은 예산으로 바로 추천.
-
-**기본 흐름 (반드시 이 순서)**: 가격(예산) → 형태(고객이 선택) → 치수 → (치수 모르면 가격기반 자동 추천) → 옵션·색상 → 견적
-
-위 규칙은 아래 모든 지침 파일보다 우선합니다. 지침의 예시·문구가 위 규칙과 충돌하면 위 규칙을 따르세요.
-
----
-
 ${mdContents}`;
 }
 
@@ -82,15 +102,50 @@ app.use(cors({
     'http://127.0.0.1:3001',
   ],
 }));
-app.use(express.json({ limit: '10mb' })); // M1 fix: 견적 폼 사진(base64) 수용
+const defaultJsonParser = express.json({ limit: '100kb' });
+const quoteJsonParser = express.json({ limit: '10mb' }); // 견적 폼 사진(base64) 수용
+app.use((req, res, next) => {
+  const parser = req.path === '/api/quote' ? quoteJsonParser : defaultJsonParser;
+  parser(req, res, next);
+});
+
+// ── Slack 알림 헬퍼 (fire-and-forget, 이벤트 라벨링) ──────────
+// 포맷: <이모지> *<이벤트명>* [<서비스>]\n<본문>
+// SLACK_WEBHOOK_URL 미설정 시 자동 off
+const SLACK_SERVICE = 'lumane-chatbot';
+// AI 제공자 — 모델 교체 시 env 한 줄만 바꾸면 알림 메시지가 자동 반영
+const AI_PROVIDER = process.env.AI_PROVIDER || 'anthropic';
+// 어드민 페이지 URL — 알림 본문 끝에 링크 한 줄 부착. 미설정 시 링크 생략 (무해 fallback)
+const ADMIN_URL = process.env.ADMIN_URL || '';
+function notifySlack(event, emoji, body) {
+  if (!process.env.SLACK_WEBHOOK_URL) return;
+  const link = ADMIN_URL ? `\n<${ADMIN_URL}|어드민 바로가기>` : '';
+  const text = `${emoji} *${event}* [${SLACK_SERVICE}]\n${body}${link}`;
+  fetch(process.env.SLACK_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).catch(e => console.error('[SLACK_NOTIFY_FAIL]', event, e.message));
+}
+
+// Rate limit 알림: IP 별 5분 쿨다운 (봇 트래픽 폭주 방지)
+const _rateLimitNotifyCache = new Map();
+function notifyRateLimitOnce(ip) {
+  const now = Date.now();
+  const last = _rateLimitNotifyCache.get(ip) || 0;
+  if (now - last < 5 * 60 * 1000) return;
+  _rateLimitNotifyCache.set(ip, now);
+  notifySlack('요청제한초과', '⚠️', `IP=${ip}`);
+}
 
 // ── Rate Limit — IP당 1분 10회 제한 ──────────────────────────
 const chatRateLimit = rateLimit({
   windowMs: 60 * 1000,   // 1분
   max: 10,               // 최대 10회
-  keyGenerator: ipKeyGenerator,
+  keyGenerator: rateLimitKey,
   handler: (req, res) => {
     console.warn(`🚫 Rate limit 초과: ${req.ip}`);
+    notifyRateLimitOnce(req.ip);
     res.status(429).json({
       error: '잠시 후 다시 시도해 주세요. (1분에 최대 10회 전송 가능)',
     });
@@ -99,35 +154,108 @@ const chatRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
-// ── Admin API 인증 미들웨어 ───────────────────────────────────
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
-
-function requireAdmin(req, res, next) {
-  if (!ADMIN_TOKEN) {
-    return res.status(403).json({ error: 'Admin 기능이 비활성화되어 있습니다.' });
-  }
-  const auth = req.headers['authorization'] || '';
-  // 타이밍 공격 방지 — 길이 다르면 즉시 reject, 같으면 timingSafeEqual
-  const expected = `Bearer ${ADMIN_TOKEN}`;
-  if (auth.length !== expected.length) {
-    return res.status(401).json({ error: '인증이 필요합니다.' });
-  }
-  const a = Buffer.from(auth);
-  const b = Buffer.from(expected);
-  if (!crypto.timingSafeEqual(a, b)) {
-    return res.status(401).json({ error: '인증이 필요합니다.' });
-  }
-  next();
+function createRateLimit({ windowMs, max, message, skipSuccessfulRequests = false }) {
+  return rateLimit({
+    windowMs,
+    max,
+    keyGenerator: rateLimitKey,
+    skipSuccessfulRequests,
+    handler: (req, res) => {
+      console.warn(`🚫 Rate limit 초과: ${req.ip} ${req.method} ${req.path}`);
+      notifyRateLimitOnce(req.ip);
+      res.status(429).json({ error: message });
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
 }
 
-// 모든 /api/admin/* 라우트에 인증 적용
+const sessionRegisterRateLimit = createRateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: '세션 생성 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+});
+const uploadRateLimit = createRateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  message: '파일 업로드 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+});
+const remoteFetchRateLimit = createRateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: '외부 미리보기 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+});
+const adminLoginRateLimit = createRateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: '관리자 인증 실패가 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+  skipSuccessfulRequests: true,
+});
+
+// ── Admin API 인증 미들웨어 ───────────────────────────────────
+const adminAuth = createAdminAuth({
+  signInWithPassword: credentials => {
+    // 요청별 client로 provider token이 다른 로그인 요청과 공유되지 않게 한다.
+    const authClient = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SECRET_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
+    return authClient.auth.signInWithPassword(credentials);
+  },
+});
+const { requireAdmin } = adminAuth;
+
+app.post('/api/admin-auth/login', adminLoginRateLimit, adminAuth.login);
+app.get('/api/admin-auth/session', adminAuth.currentSession);
+app.post('/api/admin-auth/logout', requireAdmin, adminAuth.logout);
+
+// 모든 관리자 및 견적 조회/변경 라우트에 공통 인증 적용
 app.use('/api/admin', requireAdmin);
+app.use('/api/quotes', requireAdmin);
 
 // ── 라이브 세션 관리 (메모리) ─────────────────────────────────
 // 서버 재시작 시 초기화됨. 필요 시 Supabase로 이전 가능.
-const SESSION_ID_RE = /^S-\d{13}-[a-z0-9]{5}$/;
-const VALID_ROLES   = new Set(['user', 'assistant', 'system']);
+const SESSION_ID_RE = /^S-\d{13}-(?:[a-f0-9]{32}|[a-z0-9]{5})$/;
+const TEMP_NAME_RE = /^\d{2}\/\d{2}\s\d{2}:\d{2}$/;
+const MAX_ACTIVE_SESSIONS = 1000;
 const sessions = new Map();
+const sessionSerializer = new SessionSerializer();
+const sessionHydrations = new Map();
+
+function withSerializedSession(handler) {
+  return async (req, res, next) => {
+    const sessionId = req.body?.sessionId;
+    if (!sessionId || !SESSION_ID_RE.test(sessionId)) {
+      try {
+        return await handler(req, res, next);
+      } catch (error) {
+        return next(error);
+      }
+    }
+
+    const release = await sessionSerializer.acquire(sessionId);
+    const safetyTimer = setTimeout(() => {
+      console.error(`[SESSION_LOCK_TIMEOUT] session=${sessionId}`);
+      release();
+    }, 5 * 60 * 1000);
+    safetyTimer.unref?.();
+    try {
+      return await handler(req, res, next);
+    } catch (error) {
+      return next(error);
+    } finally {
+      clearTimeout(safetyTimer);
+      release();
+    }
+  };
+}
 
 // 토큰 사용량 → Supabase에 영구 저장
 async function addTokenUsage(sessionId, usage) {
@@ -142,20 +270,16 @@ async function addTokenUsage(sessionId, usage) {
   sess.tokens.cacheRead  += usage.cache_read_input_tokens || 0;
   sess.tokens.turns      += 1;
 
-  try {
-    await supabase.from('token_stats').upsert({
-      session_id:         sessionId,
-      customer_name:      sess.customerName || null,
-      input_tokens:       sess.tokens.input,
-      output_tokens:      sess.tokens.output,
-      cache_write_tokens: sess.tokens.cacheWrite,
-      cache_read_tokens:  sess.tokens.cacheRead,
-      turns:              sess.tokens.turns,
-      updated_at:         new Date().toISOString(),
-    }, { onConflict: 'session_id' });
-  } catch (err) {
-    console.error('토큰 저장 오류:', err.message);
-  }
+  await executeSupabase('token_stats upsert', () => supabase.from('token_stats').upsert({
+    session_id:         sessionId,
+    customer_name:      sess.customerName || null,
+    input_tokens:       sess.tokens.input,
+    output_tokens:      sess.tokens.output,
+    cache_write_tokens: sess.tokens.cacheWrite,
+    cache_read_tokens:  sess.tokens.cacheRead,
+    turns:              sess.tokens.turns,
+    updated_at:         new Date().toISOString(),
+  }, { onConflict: 'session_id' }));
 }
 // 구조: Map<sessionId, {
 //   id, mode: 'ai'|'admin', messages: [],
@@ -171,7 +295,6 @@ const BLOCKLIST_TTL = 60 * 60 * 1000; // 1시간
 function markSessionDeleted(sessionId) {
   if (!sessionId) return;
   _deletedSessionBlocklist.set(sessionId, Date.now() + BLOCKLIST_TTL);
-  // 100개 초과 시 만료된 항목 자동 정리
   if (_deletedSessionBlocklist.size > 100) {
     const now = Date.now();
     for (const [id, exp] of _deletedSessionBlocklist) {
@@ -192,6 +315,11 @@ function isSessionBlocked(sessionId) {
 
 function getOrCreateSession(sessionId) {
   if (!sessions.has(sessionId)) {
+    if (sessions.size >= MAX_ACTIVE_SESSIONS) {
+      const error = new Error('활성 세션 한도에 도달했습니다.');
+      error.code = 'SESSION_CAPACITY';
+      throw error;
+    }
     sessions.set(sessionId, {
       id: sessionId,
       mode: 'ai',
@@ -199,6 +327,10 @@ function getOrCreateSession(sessionId) {
       pendingAdminMsgs: [],
       customerName: null,
       customerNameIsTemp: true,
+      customerPhone: null,
+      lastQuoteReply: null,
+      quoteNotified: false,
+      customerInstallSaved: false,
       isTest: false,
       startedAt: new Date(),
       lastActivity: new Date(),
@@ -207,6 +339,7 @@ function getOrCreateSession(sessionId) {
       adminTyping: false,     // 상담원이 입력 중 여부
       customerTyping: false,  // 고객이 입력 중 여부
       fallbackSent: false,    // API 오류 fallback 메시지 이미 보냈는지
+      slackNotified: false,
       tokens: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, turns: 0 },
       // ── 재방문 컨텍스트 (Phase 2) ──
       // isReturning: 직전 conversations에 같은 session_id 행이 있으면 true (probe 후 1회만)
@@ -217,6 +350,111 @@ function getOrCreateSession(sessionId) {
     });
   }
   return sessions.get(sessionId);
+}
+
+async function loadRecoveredTokenRow(sessionId) {
+  try {
+    return await executeSupabase('token_stats hydrate', () => supabase
+      .from('token_stats')
+      .select('input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, turns')
+      .eq('session_id', sessionId)
+      .maybeSingle());
+  } catch (error) {
+    console.warn(`[TOKEN_HYDRATE_SKIP] session=${sessionId} err=${error.message}`);
+    return null;
+  }
+}
+
+function applyRecoveredConversation(sess, row, tokenRow, isTest = false) {
+  const messages = normalizeStoredMessages(row.messages);
+  const runtime = recoverRuntimeState(messages, tokenRow, row.saved_at);
+  const customerName = row.customer_name || null;
+
+  sess.mode = row.mode === 'admin' ? 'admin' : 'ai';
+  sess.messages = messages;
+  sess.pendingAdminMsgs = [];
+  sess.customerName = customerName;
+  sess.customerNameIsTemp = !customerName || TEMP_NAME_RE.test(customerName);
+  sess.customerPhone = row.phone || null;
+  sess.startedAt = row.started_at ? new Date(row.started_at) : new Date();
+  sess.lastActivity = runtime.lastPersistedAt ? new Date(runtime.lastPersistedAt) : new Date();
+  sess.lastMessageAt = runtime.lastMessageAt ? new Date(runtime.lastMessageAt) : sess.startedAt;
+  sess.lastReadAt = runtime.lastReadAt;
+  sess.fallbackSent = runtime.fallbackSent;
+  sess.slackNotified = runtime.slackNotified;
+  sess.tokens = runtime.tokens;
+  sess.src = row.src || null;
+  sess.src2 = row.src2 || null;
+  sess.visitor_key = row.visitor_key || null;
+  sess.isTest = isTest;
+  return sess;
+}
+
+async function reconcileRecoveredQuoteState(sess) {
+  const quoteReply = [...sess.messages].reverse().find(message =>
+    message.role === 'assistant' && message.content &&
+    (message.content.includes('총 합계') || message.content.includes('견적서') || message.content.includes('주문내역'))
+  );
+  if (!quoteReply || sess.isTest) return;
+
+  const quoteNumber = 'KB-AI-' + sess.id.slice(-8).toUpperCase();
+  sess.lastQuoteReply = quoteReply.content;
+  let quoteRow;
+  try {
+    quoteRow = await executeSupabase('AI quote hydrate', () => supabase
+      .from('quotes')
+      .select('quote_number')
+      .eq('quote_number', quoteNumber)
+      .maybeSingle());
+  } catch (error) {
+    // 조회 불능 상태에서는 중복 운영 알림을 막는 쪽으로 보수적으로 복구한다.
+    sess.quoteNotified = true;
+    console.warn(`[QUOTE_RECONCILE_DEFER] session=${sess.id} err=${error.message}`);
+    return;
+  }
+  let installRow = null;
+  try {
+    installRow = await executeSupabase('customer.install hydrate', () => supabaseCustomer
+      .from('install')
+      .select('source_ref')
+      .eq('source_ref', quoteNumber)
+      .maybeSingle());
+  } catch (error) {
+    console.warn('customer.install 복구 조회 건너뜀:', error.message);
+  }
+  sess.quoteNotified = !!quoteRow;
+  sess.customerInstallSaved = !!installRow;
+}
+
+async function ensureSessionHydrated(sessionId, isTest = false) {
+  if (sessions.has(sessionId)) return sessions.get(sessionId);
+  if (sessionHydrations.has(sessionId)) return sessionHydrations.get(sessionId);
+
+  const hydration = (async () => {
+    const table = isTest ? 'test_conversations' : 'conversations';
+    const now = Date.now();
+    const cutoff = new Date(now - SESSION_RECOVERY_TTL_MS).toISOString();
+    const row = await executeSupabase('conversation hydrate', () => supabase
+      .from(table)
+      .select('session_id, mode, messages, started_at, saved_at, customer_name, phone, src, src2, visitor_key')
+      .eq('session_id', sessionId)
+      .is('deleted_at', null)
+      .gte('saved_at', cutoff)
+      .maybeSingle());
+    const sess = getOrCreateSession(sessionId);
+    if (row && isRecoverableSession(row, now)) {
+      const tokenRow = await loadRecoveredTokenRow(sessionId);
+      applyRecoveredConversation(sess, row, tokenRow, isTest);
+      await reconcileRecoveredQuoteState(sess);
+    }
+    return sess;
+  })();
+  sessionHydrations.set(sessionId, hydration);
+  try {
+    return await hydration;
+  } finally {
+    sessionHydrations.delete(sessionId);
+  }
 }
 
 // ── 대화 내용 Supabase 저장 ─────────────────────────────────
@@ -253,10 +491,9 @@ function parseOrderSheet(text) {
   }
 
   return {
-    // 개인정보(이름·전화·주소) 자동 추출 비활성화 — 지침에 따라 견적서에 절대 안 들어감
-    customer_name:   null,
-    phone:           null,
-    region:          null,
+    customer_name:   get(/성함[:\s]+([가-힣]{2,5})/) || get(/이름[:\s]+([가-힣]{2,5})/) || null,
+    phone:           get(/연락처[:\s]+(01[016789][-\s]?\d{3,4}[-\s]?\d{4})/) || get(/전화[:\s]+(01[016789][-\s]?\d{3,4}[-\s]?\d{4})/) || null,
+    region:          get(/설치\s*지역[:\s]+([^\n]+)/) || null,
     layout:          get(/설치\s*형태[:\s]+([^\n]+)/),
     frame_color:     frame_color || null,
     shelf_color:     shelf_color || null,
@@ -275,10 +512,13 @@ async function autoRegisterQuote(sess, reply) {
 
   const quoteNumber = 'KB-AI-' + sess.id.slice(-8).toUpperCase();
 
+  const phone = parsed.phone || sess.customerPhone || '';
+  const name  = parsed.customer_name || (sess.customerNameIsTemp ? '' : sess.customerName) || '';
+
   const payload = {
     quote_number:   quoteNumber,
-    name:           parsed.customer_name || sess.customerName || '',
-    phone:          parsed.phone || '',
+    name:           name,
+    phone:          phone,
     region:         parsed.region || '',
     layout_type:    parsed.layout || '',
     frame_color:    parsed.frame_color || '',
@@ -290,8 +530,54 @@ async function autoRegisterQuote(sess, reply) {
     source:         'AI상담',
   };
 
-  await supabase.from('quotes').upsert(payload, { onConflict: 'quote_number' });
-  console.log(`✅ AI 견적 자동 등록: ${quoteNumber} (${payload.name})`);
+  await executeSupabase('AI quote upsert', () =>
+    supabase.from('quotes').upsert(payload, { onConflict: 'quote_number' })
+  );
+  sess.lastQuoteReply = reply;
+  console.log(`✅ AI 견적 자동 등록: ${quoteNumber}`);
+
+  // Slack 알림 — 세션당 1회 (같은 quoteNumber upsert 중복 발사 방지)
+  if (!sess.quoteNotified) {
+    sess.quoteNotified = true;
+    const parts = [quoteNumber];
+    if (payload.name)        parts.push(payload.name);
+    if (payload.region)      parts.push(payload.region);
+    if (payload.layout_type) parts.push(payload.layout_type);
+    if (parsed.estimated_price) parts.push(`${Math.round(parsed.estimated_price / 10000)}만원`);
+    notifySlack('AI견적등록', '🤖', parts.join(' / '));
+  }
+
+  // customer 설치 접수 연동 (견적 저장의 선택적 후속 작업)
+  if (name && phone) {
+    await runOptionalSync(async () => {
+      const now = new Date().toISOString();
+      if (!sess.customerInstallSaved) {
+        await executeSupabase('AI customer.install upsert', () => supabaseCustomer.from('install').upsert([{
+          name,
+          phone,
+          status:           '접수',
+          install_type:     parsed.layout || '',
+          color_frame:      parsed.frame_color || null,
+          color_shelf:      parsed.shelf_color || null,
+          options:          parsed.options_text || null,
+          quote_amount:     parsed.estimated_price || null,
+          notes:            `견적번호: ${quoteNumber}` + (parsed.size_raw ? `\n${parsed.size_raw}` : ''),
+          inflow_type:      'AI상담',
+          inflow_date:      now.split('T')[0],
+          saved_at:         now,
+          last_changed_at:  now,
+          source_ref:       quoteNumber,
+        }], { onConflict: 'source_ref' }));
+        sess.customerInstallSaved = true;
+        console.log(`✅ customer 스키마 저장 (AI상담): ${quoteNumber}`);
+      } else {
+        console.log(`customer.install 이미 저장됨, 건너뜀 (AI상담): ${quoteNumber}`);
+      }
+    }, custErr => {
+      console.error('customer 스키마 저장 오류 (quotes는 저장됨):', custErr.message);
+      notifySlack('고객DB연동실패', '💾', `ctx=AI_QUOTE name=${custErr.name || '?'} code=${custErr.code || '?'}\nerr=${custErr.message}`);
+    });
+  }
 }
 
 // ── 실시간 Supabase upsert (Notion 없음) ─────────────────────
@@ -300,40 +586,45 @@ async function upsertConversation(sess) {
   // 고객 메시지가 하나도 없으면 저장하지 않음 (인사만 보고 나간 경우)
   const userMsgCount = sess.messages.filter(m => m.role === 'user').length;
   if (userMsgCount === 0) return;
+  const orderMsg = [...sess.messages].reverse().find(m =>
+    m.role === 'assistant' && m.content &&
+    (m.content.includes('주문서') || m.content.includes('견적서') || m.content.includes('주문내역'))
+  );
+  const parsed = orderMsg ? parseOrderSheet(orderMsg.content) : {};
+  const estimatedPrice = parsed.estimated_price || null;
+
+  const table = sess.isTest ? 'test_conversations' : 'conversations';
+  const payload = {
+    session_id:      sess.id,
+    save_reason:     'realtime',
+    customer_name:   parsed.customer_name || sess.customerName || null,
+    phone:           parsed.phone || null,
+    region:          parsed.region || null,
+    size_raw:        parsed.size_raw || null,
+    layout:          parsed.layout || null,
+    options_text:    parsed.options_text || null,
+    frame_color:     parsed.frame_color || null,
+    shelf_color:     parsed.shelf_color || null,
+    memo:            null,
+    estimated_price: estimatedPrice || null,
+    message_count:   sess.messages.length,
+    started_at:      sess.startedAt,
+    saved_at:        new Date().toISOString(),
+    messages:        sess.messages,
+    src:             sess.src || null,
+    src2:            sess.src2 || null,
+    mode:            sess.mode || 'ai',  // #21: admin 모드 영속화 (마이그레이션 2026-05-15)
+    // visitor_key는 값 있을 때만 포함 — NULL 덮어쓰기 방지 (재방문 추적용 영구 ID 보존)
+    ...(sess.visitor_key ? { visitor_key: sess.visitor_key } : {}),
+  };
+
   try {
-    const orderMsg = [...sess.messages].reverse().find(m =>
-      m.role === 'assistant' && m.content &&
-      (m.content.includes('주문서') || m.content.includes('견적서') || m.content.includes('주문내역'))
+    await executeSupabase('conversation upsert', () =>
+      supabase.from(table).upsert(payload, { onConflict: 'session_id' })
     );
-    const parsed = orderMsg ? parseOrderSheet(orderMsg.content) : {};
-    const estimatedPrice = parsed.estimated_price || null;
-
-    const table = sess.isTest ? 'test_conversations' : 'conversations';
-    const payload = {
-      session_id:      sess.id,
-      save_reason:     'realtime',
-      customer_name:   parsed.customer_name || sess.customerName || null,
-      phone:           parsed.phone || null,
-      region:          parsed.region || null,
-      size_raw:        parsed.size_raw || null,
-      layout:          parsed.layout || null,
-      options_text:    parsed.options_text || null,
-      frame_color:     parsed.frame_color || null,
-      shelf_color:     parsed.shelf_color || null,
-      memo:            null,
-      estimated_price: estimatedPrice || null,
-      message_count:   sess.messages.length,
-      started_at:      sess.startedAt,
-      messages:        sess.messages,
-      src:             sess.src || null,
-      src2:            sess.src2 || null,
-      // visitor_key는 값 있을 때만 포함 — NULL 덮어쓰기 방지 (재방문 추적용 영구 ID 보존)
-      ...(sess.visitor_key ? { visitor_key: sess.visitor_key } : {}),
-    };
-
-    await supabase.from(table).upsert(payload, { onConflict: 'session_id' });
   } catch (err) {
     console.error(`[FAIL_UPSERT] session=${sess.id} msgCount=${sess.messages.length} err=${err.message}`);
+    throw err;
   }
 }
 
@@ -344,9 +635,9 @@ async function saveConversation(sess, reason) {
     // 실시간 저장 데이터 최신화 + save_reason 업데이트
     await upsertConversation(sess);
     const saveTable = sess.isTest ? 'test_conversations' : 'conversations';
-    await supabase.from(saveTable)
+    await executeSupabase('conversation save_reason update', () => supabase.from(saveTable)
       .update({ save_reason: reason })
-      .eq('session_id', sess.id);
+      .eq('session_id', sess.id));
 
     console.log(`💾 대화 저장 완료 (${reason}): ${sess.id.slice(0, 16)}…`);
 
@@ -381,28 +672,88 @@ async function saveConversation(sess, reason) {
   }
 }
 
-// 30분 이상 비활성 세션 정리 (메모리 관리) — 만료 전 대화 자동 저장
-// H3 fix: cleanup 도중 사용자 활동 시 race condition 방지
-//   - cleanup 시작 시 lastActivity 시점 기록
-//   - save 끝난 후 lastActivity 다시 확인 → 그동안 새 활동 있었으면 삭제 스킵 (세션 살림)
+// 30분 이상 비활성 세션 정리 (메모리 관리) — 만료 전 대화 자동 저장.
+// 채팅 요청과 같은 세션 락을 사용해 cleanup/save/delete가 신규 user 이벤트와 겹치지 않게 한다.
+async function cleanupExpiredSession(id) {
+  const release = await sessionSerializer.acquire(id);
+  try {
+    const sess = sessions.get(id);
+    if (!sess || !isIdleSession(sess.lastActivity)) return;
+
+    const snapshotActivity = sess.lastActivity;
+    // #27: admin 모드 세션은 cleanup 시 ai 로 자동 강등 후 정리
+    const wasAdmin = sess.mode === 'admin';
+    if (wasAdmin) sess.mode = 'ai';
+    try {
+      await saveConversation(sess, 'expired');
+    } catch (error) {
+      console.warn('[cleanup save 실패] session=' + id + ' err=' + error.message);
+      if (wasAdmin) sess.mode = 'admin';
+      return;
+    }
+
+    // status polling처럼 락 밖에서 갱신되는 활동도 마지막에 다시 확인한다.
+    if (sessions.get(id) === sess && sess.lastActivity === snapshotActivity) {
+      sessions.delete(id);
+      if (wasAdmin) {
+        notifySlack('어드민자동복귀', '⏰', `session=${id.slice(0, 8)} 30분 무활동으로 AI 자동 복귀`);
+      }
+    } else if (wasAdmin) {
+      sess.mode = 'admin';
+    }
+  } finally {
+    release();
+  }
+}
+
 setInterval(async () => {
-  const THRESHOLD = 30 * 60 * 1000;
-  const now = Date.now();
-  for (const [id, sess] of sessions) {
-    if (now - sess.lastActivity > THRESHOLD) {
-      const snapshotActivity = sess.lastActivity;
-      try {
-        await saveConversation(sess, 'expired');
-      } catch (e) {
-        console.warn('[cleanup save 실패] session=' + id + ' err=' + e.message);
-      }
-      // save 도중 새 활동이 있었으면 (lastActivity 갱신됨) 세션 유지
-      if (sess.lastActivity === snapshotActivity) {
-        sessions.delete(id);
-      }
+  for (const id of [...sessions.keys()]) {
+    try {
+      await cleanupExpiredSession(id);
+    } catch (error) {
+      console.error(`[SESSION_CLEANUP_FAIL] session=${id} err=${error.message}`);
     }
   }
 }, 5 * 60 * 1000);
+
+// ── #21: 부팅 시 admin 모드 세션 메모리 복원 ─────────────────
+// 서버 재시작(배포) 시 in-memory sessions Map 휘발 → 어드민 개입 상태 소실.
+// DB conversations.mode = 'admin' + 최근 활동분만 메모리에 다시 로드해서
+// 고객이 다음 메시지 보낼 때 AI 가 끼어들지 않도록.
+async function hydrateAdminSessions() {
+  try {
+    const now = Date.now();
+    const cutoff = new Date(now - SESSION_IDLE_TTL_MS).toISOString();
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('session_id, mode, messages, started_at, saved_at, customer_name, phone, is_test, src, src2, visitor_key')
+      .eq('mode', 'admin')
+      .is('deleted_at', null)
+      .gte('saved_at', cutoff);
+    if (error) throw error;
+
+    let restored = 0;
+    for (const row of data || []) {
+      if (!row.session_id || !SESSION_ID_RE.test(row.session_id)) continue;
+      const release = await sessionSerializer.acquire(row.session_id);
+      try {
+        if (sessions.has(row.session_id)) continue;
+        if (!isRecoverableSession(row, now, SESSION_IDLE_TTL_MS)) continue;
+        const tokenRow = await loadRecoveredTokenRow(row.session_id);
+        const sess = getOrCreateSession(row.session_id);
+        applyRecoveredConversation(sess, row, tokenRow, row.is_test === true);
+        await reconcileRecoveredQuoteState(sess);
+        restored++;
+      } finally {
+        release();
+      }
+    }
+    console.log(`[SESSION_RECOVERY] admin_restored=${restored} scanned=${data?.length || 0} window_min=${SESSION_IDLE_TTL_MS / 60000}`);
+  } catch (e) {
+    console.error('[HYDRATE_ADMIN_FAIL]', e.message);
+  }
+}
+hydrateAdminSessions();
 
 // ── 보안 헤더 (meta 태그 대신 HTTP 헤더로 설정) ──
 app.use((req, res, next) => {
@@ -433,8 +784,13 @@ const _serveHtml = (file) => (req, res) => {
 };
 app.get('/',           _serveHtml('index.html'));
 app.get('/index.html', _serveHtml('index.html'));
-app.get('/admin',      _serveHtml('admin.html'));
-app.get('/admin.html', _serveHtml('admin.html'));
+const _serveAdminPage = createAdminPageHandler({ adminAuth, rootDir: __dirname });
+const _serveReactAdminPage = createAdminPageHandler({ adminAuth, rootDir: __dirname, adminFile: 'dist/admin/index.html' });
+app.get('/admin',      _serveAdminPage);
+app.get('/admin.html', _serveAdminPage);
+app.get('/admin-react', _serveReactAdminPage);
+app.get('/admin-react/', _serveReactAdminPage);
+app.get('/admin-login.html', _serveHtml('admin-login.html'));
 app.get('/chat',       _serveHtml('chat.html'));
 app.get('/chat.html',  _serveHtml('chat.html'));
 app.get('/quote',      _serveHtml('quote.html'));
@@ -460,6 +816,7 @@ app.use('/css',          express.static(path.join(__dirname, 'css'),          _s
 app.use('/js',           express.static(path.join(__dirname, 'js'),           _staticOpts));
 app.use('/images',       express.static(path.join(__dirname, 'images'),       _staticOpts));
 app.use('/preview_site', express.static(path.join(__dirname, 'preview_site'), _staticOpts));
+app.use('/admin-react/assets', express.static(path.join(__dirname, 'dist', 'admin', 'assets'), _staticOpts));
 app.get('/floorplan_preview.html', _serveHtml('floorplan_preview.html'));
 
 // ── 헬스 체크 ─────────────────────────────────────────────────
@@ -479,6 +836,7 @@ app.get('/api/version', (req, res) => {
 // ── 페이지 방문 비콘 (랜딩 방문 추적, 채팅 진입 전 단계) ─────
 // 광고 클릭 → 랜딩 도착했는지 추적용. 채팅 안 들어가도 카운트.
 // 같은 visitor_key 24h 쿨다운은 클라이언트에서 처리.
+// 어드민 통계는 dev에서 보지만 같은 Supabase 가리키므로 cloudtype 방문도 집계됨.
 app.post('/api/track-visit', chatRateLimit, async (req, res) => {
   // 비콘은 절대 클라이언트를 블락하지 않음 — 항상 200 즉시 응답
   res.json({ ok: true });
@@ -492,7 +850,7 @@ app.post('/api/track-visit', chatRateLimit, async (req, res) => {
       .replace(/[^a-zA-Z0-9_\-]/g, '').slice(0, 100);
     const srcStr = sanitize(src);
     const src2Str = sanitize(src2);
-    if (!srcStr && !pageStr) return; // 의미 없는 신호는 저장 안 함
+    if (!srcStr && !pageStr) return;
     supabase.from('page_visits').insert({
       src:         srcStr || null,
       src2:        src2Str || null,
@@ -513,9 +871,11 @@ const STORAGE_BUCKET = 'lumane-uploads';
 // 서버 시작 시 버킷 자동 생성 (없을 때만)
 (async () => {
   try {
-    const { data: buckets } = await supabase.storage.listBuckets();
+    const buckets = await executeSupabase('storage bucket list', () => supabase.storage.listBuckets());
     if (!buckets?.find(b => b.name === STORAGE_BUCKET)) {
-      await supabase.storage.createBucket(STORAGE_BUCKET, { public: true });
+      await executeSupabase('storage bucket create', () =>
+        supabase.storage.createBucket(STORAGE_BUCKET, { public: true })
+      );
       console.log(`✅ Supabase Storage 버킷 생성: ${STORAGE_BUCKET}`);
     }
   } catch (e) {
@@ -523,61 +883,38 @@ const STORAGE_BUCKET = 'lumane-uploads';
   }
 })();
 
-// H2 fix: 업로드 보안 강화 — 확장자 화이트리스트 축소(이미지+PDF), 5MB 제한
 const uploadMw = multer({
   storage: multer.memoryStorage(),
-  limits:  { fileSize: 5 * 1024 * 1024 },
+  limits:  { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const ok = /\.(jpe?g|png|webp|heic|heif|pdf)$/i.test(path.extname(file.originalname));
-    cb(ok ? null : new Error('지원하지 않는 형식 (이미지/PDF만 가능)'), ok);
+    try {
+      uploadTypeFor(file);
+      cb(null, true);
+    } catch (error) {
+      cb(error, false);
+    }
   },
 });
-
-// H2 fix: 업로드 rate limit — IP당 분당 5회
-const _uploadRate = new Map();
-function uploadRateLimit(req, res, next) {
-  const ip = req.ip || 'unknown';
-  const now = Date.now();
-  const arr = (_uploadRate.get(ip) || []).filter(t => now - t < 60_000);
-  if (arr.length >= 5) {
-    return res.status(429).json({ error: '업로드 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.' });
-  }
-  arr.push(now);
-  _uploadRate.set(ip, arr);
-  // 주기적 정리
-  if (_uploadRate.size > 200) {
-    for (const [k, v] of _uploadRate) {
-      if (v.length === 0 || now - v[v.length - 1] > 60_000) _uploadRate.delete(k);
-    }
-  }
-  next();
-}
 
 app.post('/api/upload', uploadRateLimit, uploadMw.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '파일이 없습니다' });
 
-  // H2 fix: 인증 검증 — 어드민 토큰이 있으면 통과, 아니면 유효한 채팅 세션 필요
-  const auth = req.headers.authorization || '';
-  const isAdminCall = ADMIN_TOKEN && auth === `Bearer ${ADMIN_TOKEN}`;
-  if (!isAdminCall) {
-    const sessionId = req.body?.sessionId || req.body?.session_id;
-    if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
-      return res.status(401).json({ error: '유효한 세션이 필요합니다' });
-    }
-    if (!sessions.has(sessionId)) {
-      return res.status(403).json({ error: '세션이 등록되지 않았습니다. 페이지를 새로고침해 주세요.' });
-    }
+  let uploadType;
+  try {
+    uploadType = validateUpload(req.file);
+  } catch (error) {
+    console.warn(`[UPLOAD_REJECTED] reason=${error.message}`);
+    return res.status(400).json({ error: '파일 형식과 실제 내용이 일치하지 않습니다.' });
   }
-
-  const ext      = path.extname(req.file.originalname).toLowerCase();
+  const ext      = uploadType.extension;
   const filename = Date.now() + '-' + Math.random().toString(36).slice(2, 7) + ext;
-  const isImage  = /\.(jpe?g|png|webp|heic|heif)$/i.test(ext);
+  const isImage  = /\.(jpe?g|png|gif|webp)$/i.test(ext);
 
   try {
     const { error } = await supabase.storage
       .from(STORAGE_BUCKET)
       .upload(filename, req.file.buffer, {
-        contentType: req.file.mimetype,
+        contentType: uploadType.contentType,
         upsert: false,
       });
     if (error) throw error;
@@ -594,44 +931,14 @@ app.post('/api/upload', uploadRateLimit, uploadMw.single('file'), async (req, re
 });
 
 // ── OG 링크 미리보기 API ─────────────────────────────────────
-// SSRF 방어: 호스트네임을 실제 IP로 해석 후 사설/loopback 대역 차단
-function _isPrivateIp(ip) {
-  if (!ip) return true;
-  // IPv4 사설/loopback/링크로컬
-  if (/^127\./.test(ip)) return true;
-  if (/^10\./.test(ip)) return true;
-  if (/^192\.168\./.test(ip)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
-  if (/^169\.254\./.test(ip)) return true;
-  if (/^0\./.test(ip)) return true;
-  // IPv6 loopback / 링크로컬 / unique-local
-  if (ip === '::1' || ip === '::') return true;
-  if (/^fe80:/i.test(ip)) return true;
-  if (/^fc[0-9a-f]{2}:/i.test(ip) || /^fd[0-9a-f]{2}:/i.test(ip)) return true;
-  return false;
-}
-async function _safeUrlOrThrow(url) {
-  const u = new URL(url);
-  const lookups = await dns.lookup(u.hostname, { all: true });
-  for (const { address } of lookups) {
-    if (_isPrivateIp(address)) throw new Error('내부 IP 차단');
-  }
-  return u;
-}
-
-app.get('/api/og', async (req, res) => {
+app.get('/api/og', remoteFetchRateLimit, async (req, res) => {
   const { url } = req.query;
   if (!url || !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: 'url 파라미터가 필요합니다' });
   }
-  // 정규식 1차 차단 (8진수·hex 등 우회 방지를 위해 dns 검증도 함께)
-  const BLOCKED_IP = /^https?:\/\/(localhost|127\.|0\.0\.0\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1|169\.254\.)/i;
-  if (BLOCKED_IP.test(url)) {
-    return res.status(400).json({ error: '허용되지 않는 URL입니다' });
-  }
-  // dns 기반 IP 검증 (8진수·10진수·DNS 리바인딩 방어)
+  let safeUrl;
   try {
-    await _safeUrlOrThrow(url);
+    safeUrl = await assertSafeExternalUrl(url, dns.lookup);
   } catch {
     return res.status(400).json({ error: '허용되지 않는 URL입니다' });
   }
@@ -658,7 +965,7 @@ app.get('/api/og', async (req, res) => {
   }
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(safeUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LumaneBot/1.0)' },
       signal:  AbortSignal.timeout(5000),
       redirect: 'manual', // SSRF 방어: 자동 리다이렉트로 내부 IP 우회 차단
@@ -666,7 +973,11 @@ app.get('/api/og', async (req, res) => {
     if (resp.status >= 300 && resp.status < 400) {
       return res.status(400).json({ error: '리다이렉트 차단됨' });
     }
-    const html = await resp.text();
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('text/html')) {
+      return res.status(400).json({ error: 'HTML 문서만 미리보기할 수 있습니다' });
+    }
+    const html = await readTextLimited(resp, 512 * 1024);
 
     // HTML 엔티티 디코딩 (&amp; → & 등)
     const decodeHtml = s => s
@@ -706,39 +1017,79 @@ app.get('/api/og', async (req, res) => {
 });
 
 const VALID_SHAPES = ['ㄱ자', 'ㄷ자', 'ㅡ자', '11자', 'ㅁ자'];
-const SCORE_THRESHOLD = 50;
-function scoreRow(row, shape, unitsNum, optList) {
-  let score = 0;
-  if (shape && row.shape === shape) score += 100;
-  /* v2 테이블 컬럼명: units → cells, options → modules (modules_normalized 우선 사용)
-     ※ 0칸 row는 무효 데이터로 간주하고 가산점·매칭에서 제외 */
-  const rowUnits = row.cells != null ? row.cells : row.units;
-  if (unitsNum > 0 && rowUnits != null && rowUnits > 0) {
-    const diff = Math.abs(rowUnits - unitsNum);
-    score += Math.max(0, 50 - diff * 15);
-  } else if (unitsNum === 0 && rowUnits != null && rowUnits > 0) {
-    /* 사용자가 칸수 미지정 — 중간 사이즈(5~6칸) 우선해서 형태 코너가 잘 보이게 */
-    if (rowUnits >= 5 && rowUnits <= 6) score += 30;
-    else if (rowUnits >= 4 && rowUnits <= 7) score += 15;
+const SCORE_THRESHOLD = 0.30;   // 0~1 정규화 점수 (옛 50/100 정수 → 비율)
+
+// LLM (SHOW_EXAMPLE 태그) 표기 → DB modules_normalized 와 비교용 표기로 정규화.
+// 옛 dressroom_images 의 substring truncation ('악세사리', '아일랜드') 결함 정정.
+const MODULE_NORMALIZE_FORM = {
+  '거울장': '거울장',
+  '디바이더': '디바이더',
+  '2단서랍': '2단서랍', '3단서랍': '3단서랍', '4단서랍': '4단서랍',
+  '바지걸이': '바지걸이',
+  '이불반장': '이불반장', '이불긴장': '이불긴장',
+  '화장대': '화장대',
+  '아일랜드': '아일랜드장', '아일랜드장': '아일랜드장',
+  '악세사리': '악세사리장', '악세서리': '악세사리장',
+  '악세사리장': '악세사리장', '악세서리장': '악세사리장',
+  '5단': '5단선반', '6단': '6단선반', '7단': '7단선반',
+  '5단선반': '5단선반', '6단선반': '6단선반', '7단선반': '7단선반',
+  '코너5단': '코너5단선반', '코너6단': '코너6단선반', '코너7단': '코너7단선반',
+  '공간박스': '공간박스',
+  // 매칭 무시 (양쪽 시도 — 별도 처리 / 표준 칸 ID)
+  '이불장': null,             // 이불반장 / 이불긴장 양쪽 시도
+  '6단(7단)선반': null,       // 6단 / 7단 양쪽 시도
+  '상하옷봉': null, '긴옷행거': null,  // 표준 칸 — JPG 명에 없음
+};
+
+function normalizeOptList(optList) {
+  // 수량 표기 제거 + 동의어 통일.
+  const out = [];
+  for (let raw of optList) {
+    const stripped = String(raw).replace(/\s*[-]?\s*\d+\s*개\s*$/, '').trim();
+    if (!(stripped in MODULE_NORMALIZE_FORM)) {
+      out.push(stripped);   // 미등록 — 그대로 (매칭 안 될 가능성)
+    } else if (MODULE_NORMALIZE_FORM[stripped] !== null) {
+      out.push(MODULE_NORMALIZE_FORM[stripped]);
+    }
+    // null 케이스 (이불장, 6단(7단)선반, 상하옷봉, 긴옷행거) 는 무시
   }
-  let rowOpts = [];
-  const rawOpts = row.modules_normalized != null ? row.modules_normalized
-                : row.modules != null ? row.modules
-                : row.options;
-  if (Array.isArray(rawOpts)) {
-    rowOpts = rawOpts;
-  } else if (typeof rawOpts === 'string') {
-    try { const p = JSON.parse(rawOpts); rowOpts = Array.isArray(p) ? p : []; } catch { rowOpts = []; }
+  return Array.from(new Set(out));
+}
+
+function scoreRow(row, shape, cellsNum, optSet) {
+  // shape 다르면 0 (필수 필터)
+  if (shape && row.shape !== shape) return 0;
+
+  // cell_match — 정규화 비율 (옛 절대값 페널티 → 0~1 비율)
+  let cellMatch = 1.0;
+  if (cellsNum > 0 && row.cells != null) {
+    const m = Math.max(cellsNum, row.cells);
+    cellMatch = m === 0 ? 0 : 1 - Math.abs(row.cells - cellsNum) / m;
   }
-  for (const opt of optList) {
-    if (rowOpts.includes(opt)) score += 20;
+
+  // module_overlap — jaccard (양방향, 옛 단방향 includes 보강)
+  const rowSet = new Set(Array.isArray(row.modules_normalized)
+    ? row.modules_normalized : []);
+  let modOverlap;
+  if (optSet.size === 0 && rowSet.size === 0) {
+    modOverlap = 1.0;
+  } else if (optSet.size === 0 || rowSet.size === 0) {
+    modOverlap = 0.3;        // 한쪽만 옵션 — 약한 매칭
+  } else {
+    let intersect = 0;
+    for (const x of optSet) if (rowSet.has(x)) intersect++;
+    const union = optSet.size + rowSet.size - intersect;
+    modOverlap = union === 0 ? 0 : intersect / union;
   }
-  return score;
+
+  return 0.4 * cellMatch + 0.6 * modOverlap;
 }
 
 // ── 예시 이미지 매칭 API (DB 기반) ───────────────────────────
+// dressroom_images_v2 테이블 사용 (이슈 #22 — 옛 dressroom_images 결함 정정 후).
+// 옛 테이블 결함: 옵션 substring truncation, ㅡ자/11자 표기 일관성, 사람 추적 불가.
 app.get('/api/find-example', chatRateLimit, async (req, res) => {
-  let { shape = '', units = '', options = '', exclude = '' } = req.query;
+  let { shape = '', units = '', options = '' } = req.query;
   // AI가 ㅡ 대신 대시 문자(—, –, -)를 쓰는 경우 정규화
   shape = shape.replace(/^[—–\-]+자$/, 'ㅡ자');
   if (shape && !VALID_SHAPES.includes(shape)) {
@@ -747,35 +1098,34 @@ app.get('/api/find-example', chatRateLimit, async (req, res) => {
   const rawOptions = typeof options === 'string' ? options : '';
   const rawUnits   = typeof units   === 'string' ? units   : '';
   const optList = rawOptions.split(',').map(s => s.trim().slice(0, 50)).filter(Boolean).slice(0, 10);
-  const unitsNum = Math.min(Math.max(parseInt(rawUnits) || 0, 0), 100);
-  /* "다른 예시 보기" 용 — 이미 본 URL은 후보에서 제외 (콤마 분리, 최대 20개) */
-  const excludeList = (typeof exclude === 'string' ? exclude : '')
-    .split(',').map(s => s.trim()).filter(Boolean).slice(0, 20);
-  const excludeSet = new Set(excludeList);
+  const cellsNum = Math.min(Math.max(parseInt(rawUnits) || 0, 0), 100);
+  const optSet = new Set(normalizeOptList(optList));
 
   try {
     let query = supabase
       .from('dressroom_images_v2')
-      .select('url, shape, cells, modules, modules_normalized');
+      .select('url, shape, cells, modules_normalized, variant_no');
     if (shape) query = query.eq('shape', shape);
     const { data, error } = await query;
 
     if (error) return res.json({ success: false, reason: 'db_error' });
     if (!data || data.length === 0) return res.json({ success: false, reason: 'db_empty' });
 
-    let best = null;
-    let bestScore = -1;
-    for (const row of data) {
-      if (excludeSet.has(row.url)) continue;
-      const score = scoreRow(row, shape, unitsNum, optList);
-      if (score > bestScore) { bestScore = score; best = row; }
+    // 점수 계산 + 정렬
+    const scored = data.map(row => ({ row, score: scoreRow(row, shape, cellsNum, optSet) }));
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.filter(s => s.score >= SCORE_THRESHOLD);
+
+    if (top.length === 0) {
+      return res.json({ success: false, reason: 'no_match' });
     }
 
-    if (bestScore >= SCORE_THRESHOLD && best?.url) {
-      res.json({ success: true, url: best.url });
-    } else {
-      res.json({ success: false, reason: 'no_match' });
-    }
+    // 같은 score 클러스터 내 random pick — variant 다양성 (#23 의 prelude)
+    const bestScore = top[0].score;
+    const cluster = top.filter(s => Math.abs(s.score - bestScore) < 0.001);
+    const pick = cluster[Math.floor(Math.random() * cluster.length)];
+
+    res.json({ success: true, url: pick.row.url });
   } catch (err) {
     console.error('[find-example] DB 오류:', err.message);
     res.json({ success: false, reason: 'internal_error' });
@@ -879,11 +1229,18 @@ async function buildApiMessages(messages) {
 }
 
 // ── 채팅 API ──────────────────────────────────────────────────
-app.post('/api/chat', chatRateLimit, async (req, res) => {
-  const { messages, sessionId, syncOnly, isTest } = req.body;
+app.post('/api/chat', chatRateLimit, withSerializedSession(async (req, res) => {
+  const { sessionId, syncOnly, isTest } = req.body;
+  let event = req.body.event;
+  let messages = [];
+  let clientMessage = null;
 
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: 'messages 배열이 필요합니다.' });
+  // 캐시된 구형 브라우저 호환: 전체 이력을 신뢰하지 않고 마지막 user 입력 하나만 이벤트로 변환한다.
+  if (!event && Array.isArray(req.body.messages) && req.body.messages.length > 0) {
+    event = legacyHistoryToEvent(sessionId, req.body.messages);
+    if (!event) return res.status(400).json({ error: '유효한 user 메시지가 없습니다.' });
+  } else if (req.body.messages !== undefined && !Array.isArray(req.body.messages)) {
+    return res.status(400).json({ error: '잘못된 messages 형식입니다.' });
   }
 
   // H4 fix: 어드민이 삭제한 sessionId는 1시간 내 채팅 차단
@@ -891,25 +1248,40 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
     return res.status(410).json({ error: '이 세션은 종료되었습니다.' });
   }
 
-  // messages 항목 검증 (role·content 형식)
-  const validMessages = messages.every(m =>
-    VALID_ROLES.has(m.role) &&
-    typeof m.content === 'string' &&
-    m.content.length <= 20000
-  );
-  if (!validMessages) {
-    return res.status(400).json({ error: '잘못된 messages 형식입니다.' });
-  }
-
-  // 세션이 있으면 메시지 동기화
+  // 세션이 있으면 DB 정본을 먼저 hydrate하고 신규 user 이벤트만 append한다.
   if (sessionId) {
     // sessionId 형식 검증
     if (!SESSION_ID_RE.test(sessionId)) {
       return res.status(400).json({ error: '유효하지 않은 sessionId입니다.' });
     }
 
-    const sess = getOrCreateSession(sessionId);
-    sess.messages = messages;
+    let sess;
+    try {
+      sess = await ensureSessionHydrated(sessionId, isTest === true);
+      if (event) {
+        const accepted = acceptClientEvent(sess, event);
+        clientMessage = accepted.message;
+        if (!accepted.isNew) {
+          const priorReply = findReply(sess, event.id);
+          if (priorReply) {
+            try {
+              await upsertConversation(sess);
+              await autoRegisterQuote(sess, priorReply.content);
+              return res.json({ message: priorReply.content, messageId: priorReply.id, deduplicated: true });
+            } catch (error) {
+              return res.status(503).json({ error: '대화를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof ConversationContractError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      console.error(`[FAIL_HYDRATE] session=${sessionId} err=${error.message}`);
+      return res.status(503).json({ error: '대화 상태를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.' });
+    }
+    messages = sess.messages;
     sess.lastActivity = new Date();
     if (!syncOnly) sess.lastMessageAt = new Date();
     if (isTest === true) sess.isTest = true;
@@ -935,43 +1307,94 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
           sess.startedAt = parsed;
         }
       }
-      upsertConversation(sess).catch(e => {
-        console.error(`[FAIL_SYNC_1] session=${sess.id} err=${e.message}`);
-        setTimeout(() => upsertConversation(sess).catch(e2 => console.error(`[FAIL_SYNC_2] session=${sess.id} err=${e2.message}`)), 2000);
-      });
-      return res.json({ ok: true, synced: messages.length });
+      try {
+        await upsertConversation(sess);
+        return res.json({ ok: true, appended: clientMessage ? 1 : 0 });
+      } catch (error) {
+        notifySlack('DB저장실패', '💾', `ctx=SYNC session=${sess.id.slice(0, 8)}\nname=${error.name || '?'} code=${error.code || '?'}\nerr=${error.message}`);
+        return res.status(503).json({ error: '메시지를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+      }
+    }
+
+    // ── Slack 모니터 알림 (fire-and-forget, 모니터링 목적) ──
+    // - 세션당 최초 1회 (대화 시작 시점)만 발사
+    // - 마지막 메시지가 user 인 경우 = 신규 입력
+    // - SLACK_WEBHOOK_URL 미설정 시 자동 off
+    if (!sess.slackNotified) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg?.role === 'user' && typeof lastMsg.content === 'string') {
+        sess.slackNotified = true;
+        const preview = lastMsg.content.length > 200
+          ? lastMsg.content.slice(0, 200) + '…'
+          : lastMsg.content;
+        const label = sess.customerName || sessionId.slice(0, 8);
+        notifySlack('상담시작', '🆕', `*${label}*\n${preview}`);
+      }
     }
 
     // admin 모드면 AI 응답 없이 대기 신호만 반환
     if (sess.mode === 'admin') {
-      return res.json({ message: null, adminMode: true });
+      // user 메시지를 DB 에 즉시 보존 (fire-and-forget, 재시도 + Slack 알림)
+      // — admin 모드는 AI 응답 경로의 upsertConversation 을 안 거치므로 여기서 명시적으로 저장
+      try {
+        await upsertConversation(sess);
+        return res.json({ message: null, adminMode: true });
+      } catch (error) {
+        notifySlack('DB저장실패', '💾', `ctx=ADMIN_USER session=${sess.id.slice(0, 8)}\nname=${error.name || '?'} code=${error.code || '?'}\nerr=${error.message}`);
+        return res.status(503).json({ error: '메시지를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+      }
+    }
+  }
+
+  // AI 호출 전에 user 이벤트를 먼저 commit해 프로세스 종료·LLM 장애에서도 입력을 보존한다.
+  if (sessionId && clientMessage) {
+    try {
+      await upsertConversation(sessions.get(sessionId));
+    } catch (error) {
+      notifySlack('DB저장실패', '💾', `ctx=USER_EVENT session=${sessionId.slice(0, 8)}\nname=${error.name || '?'} code=${error.code || '?'}\nerr=${error.message}`);
+      return res.status(503).json({ error: '메시지를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
     }
   }
 
   // ── Haiku 사전 필터: 마지막 user 메시지만 검사 ──────────────
-  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+  const lastUserMsg = clientMessage;
   if (lastUserMsg) {
     const relevant = await isRelevantMessage(lastUserMsg.content);
     if (!relevant) {
       console.warn(`🚫 관련 없는 메시지 차단 (IP: ${req.ip}): "${lastUserMsg.content.slice(0, 40)}"`);
       const canned = '죄송해요, 저는 케이트블랑 드레스룸 상담만 도와드릴 수 있어요 😊\n드레스룸 관련 질문이 있으시면 편하게 말씀해 주세요!';
       if (sessionId && sessions.has(sessionId)) {
-        sessions.get(sessionId).messages.push({ role: 'assistant', content: canned });
-        sessions.get(sessionId).lastActivity = new Date();
+        const sess = sessions.get(sessionId);
+        const saved = appendServerMessage(sess, {
+          id: `filter_${clientMessage.id}`,
+          content: canned,
+          replyTo: clientMessage.id,
+        });
+        sess.lastActivity = new Date();
+        try {
+          await upsertConversation(sess);
+          return res.json({ message: canned, messageId: saved.id });
+        } catch (error) {
+          return res.status(503).json({ error: '응답을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+        }
       }
       return res.json({ message: canned });
     }
   }
 
   // 첫 인사 — API 호출 없이 고정 문구 반환 (토큰 절약)
-  if (messages.length === 0) {
+  if (!event && messages.length === 0) {
     const greeting = '안녕하세요~ 케이트블랑 드레스룸 상담 담당 루마네예요 :)\n\n무엇을 도와드릴까요?';
     if (sessionId && sessions.has(sessionId)) {
       const sess = sessions.get(sessionId);
-      sess.messages.push({ role: 'assistant', content: greeting, ts: new Date().toISOString() });
+      appendServerMessage(sess, { id: `greet_${sessionId}`, content: greeting });
       sess.lastActivity = new Date();
     }
-    return res.json({ message: greeting });
+    return res.json({ message: greeting, messageId: `greet_${sessionId}` });
+  }
+
+  if (!clientMessage) {
+    return res.status(400).json({ error: '신규 event가 필요합니다.' });
   }
 
   // ts/mid 등 extra 필드 제거 + 긴 대화 자동 요약
@@ -998,7 +1421,7 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
 
   try {
     const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',  /* Sonnet → Haiku 응답 속도 개선 (5초 → 2~3초). 품질 약간 낮아질 수 있음 — 모니터링 후 필요시 롤백 */
+      model: 'claude-sonnet-4-6',
       max_tokens: 1024,
       system: systemBlocks,
       messages: apiMessages,
@@ -1014,7 +1437,11 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
     // 세션에 AI 응답 저장 + 실시간 Supabase upsert
     if (sessionId && sessions.has(sessionId)) {
       const sess = sessions.get(sessionId);
-      sess.messages.push({ role: 'assistant', content: reply, ts: new Date().toISOString() });
+      const savedReply = appendServerMessage(sess, {
+        id: `ai_${clientMessage.id}`,
+        content: reply,
+        replyTo: clientMessage.id,
+      });
       sess.lastActivity = new Date();
 
       // AI 응답에서 "OO 고객님" 패턴으로 이름 추출 — 임시 이름인 경우만 업데이트
@@ -1028,49 +1455,81 @@ app.post('/api/chat', chatRateLimit, async (req, res) => {
         }
       }
 
-      upsertConversation(sess).catch(e => {
-        console.error(`[FAIL_AI_SAVE_1] session=${sess.id} err=${e.message}`);
-        setTimeout(() => upsertConversation(sess).catch(e2 => console.error(`[FAIL_AI_SAVE_2] session=${sess.id} err=${e2.message}`)), 2000);
-      });
-      autoRegisterQuote(sess, reply).catch(e => console.error('견적 자동 등록 실패:', e.message));
+      // 사용자 메시지에서 전화번호 추출 — 견적서 출력 후 고객이 연락처 입력 시
+      if (!sess.customerPhone && lastUserMsg) {
+        const phoneMatch = lastUserMsg.content.match(/01[016789][-\s]?\d{3,4}[-\s]?\d{4}/);
+        if (phoneMatch) {
+          sess.customerPhone = phoneMatch[0];
+          // 이미 견적서가 출력된 세션이면 customer 스키마에 즉시 재등록
+          if (sess.lastQuoteReply) {
+            autoRegisterQuote(sess, sess.lastQuoteReply).catch(e =>
+              console.error('customer 재등록 실패:', e.message)
+            );
+          }
+        }
+      }
+
+      await upsertConversation(sess);
+      await autoRegisterQuote(sess, reply);
+      res.json({ message: reply, messageId: savedReply.id });
+      return;
     }
 
     res.json({ message: reply });
 
   } catch (err) {
-    console.error('Anthropic API 오류:', err.message);
+    if (err.name === 'SupabaseOperationError') {
+      console.error(`[FAIL_CHAT_COMMIT] session=${sessionId} err=${err.message}`);
+      notifySlack('DB저장실패', '💾', `ctx=CHAT_COMMIT session=${sessionId.slice(0, 8)}\nname=${err.name || '?'} code=${err.code || '?'}\nerr=${err.message}`);
+      return res.status(503).json({ error: '대화를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+    }
+    console.error(`${AI_PROVIDER} API 오류:`, err.message);
 
     // 고객에게는 담당자 연결 안내 메시지 표시 — 세션당 최초 1회만
     const sess = sessionId && sessions.has(sessionId) ? sessions.get(sessionId) : null;
     if (sess && !sess.fallbackSent) {
       const fallback = '잠시만요! 😊\n담당자를 연결해 드리겠습니다.\n곧 직접 안내해 드릴게요, 조금만 기다려 주세요 🙏';
-      sess.messages.push({ role: 'assistant', content: fallback });
+      const savedFallback = appendServerMessage(sess, {
+        id: `fallback_${clientMessage?.id || Date.now()}`,
+        content: fallback,
+        replyTo: clientMessage?.id,
+      });
       sess.lastActivity = new Date();
-      sess.fallbackSent = true;
-      return res.json({ message: fallback });
+      try {
+        await upsertConversation(sess);
+        sess.fallbackSent = true;
+        // Slack 알림 — fallback 저장이 확인된 세션당 1회
+        // err.status (HTTP, 401/429/529 등), err.name (RateLimitError/OverloadedError 등) 정확히 노출
+        notifySlack('LLM호출실패', '🚨', `provider=${AI_PROVIDER} status=${err.status ?? '?'} name=${err.name ?? '?'}\nsession=${sess.id.slice(0, 8)}\nerr=${err.message}`);
+      } catch (saveError) {
+        sess.messages = sess.messages.filter(message => message.id !== savedFallback.id);
+        sess.fallbackSent = false;
+        console.error(`[FAIL_FALLBACK_SAVE] session=${sess.id} err=${saveError.message}`);
+        return res.status(503).json({ error: '대화를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.' });
+      }
+      return res.json({ message: fallback, messageId: savedFallback.id });
     }
     // 이미 fallback을 보낸 세션: 빈 응답 (클라이언트에서 무시)
     res.json({ message: '' });
   }
-});
+}));
 
 // ── 세션 등록 API ─────────────────────────────────────────────
-app.post('/api/session/register', async (req, res) => {
+app.post('/api/session/register', sessionRegisterRateLimit, withSerializedSession(async (req, res) => {
   const { sessionId, nickname, isTest, src, src2, visitor_key } = req.body;
 
   /* [SRC 진단 로그] 새 라벨 출처 추적용 — 임시 진단 코드 (출처 파악 후 제거 예정)
      라벨이 코드 외 어디서 들어오는지 추적하기 위해
-     referer / userAgent / origin / src를 cloudtype 로그에 남김.
-     헤더 길이 제한으로 악성 헤더 로그 폭증 차단. */
+     referer / userAgent / origin / src를 cloudtype 로그에 남김 */
   if (src && typeof src === 'string' && src.trim()) {
     try {
       console.log('[SRC_RECV]', JSON.stringify({
-        src: src.trim().slice(0, 100),
-        src2: typeof src2 === 'string' ? src2.trim().slice(0, 100) : null,
+        src: src.trim(),
+        src2: typeof src2 === 'string' ? src2.trim() : null,
         sessionId,
-        userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
-        referer:   String(req.headers['referer'] || req.headers['referrer'] || '').slice(0, 300),
-        origin:    String(req.headers['origin']  || '').slice(0, 100),
+        userAgent: req.headers['user-agent'],
+        referer: req.headers['referer'] || req.headers['referrer'],
+        origin: req.headers['origin'],
         ts: new Date().toISOString(),
       }));
     } catch {}
@@ -1083,7 +1542,14 @@ app.post('/api/session/register', async (req, res) => {
   if (isSessionBlocked(sessionId)) {
     return res.status(410).json({ error: '이 세션은 어드민에 의해 종료되었습니다. 새 세션으로 다시 시도하세요.' });
   }
-  const sess = getOrCreateSession(sessionId);
+  let sess;
+  try {
+    sess = await ensureSessionHydrated(sessionId, isTest === true);
+  } catch (error) {
+    console.error(`[FAIL_REGISTER_HYDRATE] session=${sessionId} err=${error.message}`);
+    return res.status(503).json({ error: '대화 상태를 불러오지 못했습니다.' });
+  }
+  sess.lastActivity = new Date();
   if (nickname && typeof nickname === 'string') {
     const trimmed = nickname.trim().slice(0, 20);
     sess.nickname = trimmed;
@@ -1117,14 +1583,13 @@ app.post('/api/session/register', async (req, res) => {
   }
   // 재방문 여부 확인 + 직전 견적 요약 추출 (session_id 매칭)
   // M2 fix: fire-and-forget — 응답 즉시 반환, detect는 백그라운드
-  // (isReturning은 첫 /api/chat 시점까지만 필요 → 그 사이 보통 완료됨)
   if (sess.isReturning === undefined) {
     detectReturningCustomer(sess).catch(err =>
       console.warn('[detectReturningCustomer bg] session=' + sess.id + ' err=' + err.message)
     );
   }
   res.json({ ok: true });
-});
+}));
 
 // ── 재방문 감지 + 직전 견적 요약 추출 ─────────────────────────
 // session_id가 localStorage에 영구 저장되는 점을 이용해 동일 브라우저 재방문을 감지.
@@ -1230,6 +1695,175 @@ app.get('/api/admin/source-stats', async (req, res) => {
   }
 });
 
+// ── 어드민: 방문자 통계 (5단계 깔때기) ────────────────────────
+// dev (lumane-server) 동기화. 랜딩(page_visits) → 채팅(visitor_logs) →
+// 대화(conversations) → 견적(quotes) → 접수(quotes.status≠'접수') 5단계.
+app.get('/api/admin/stats/visitors', async (req, res) => {
+  try {
+    const range = Math.min(Math.max(parseInt(req.query.range) || 7, 1), 90);
+    const KST_OFFSET = 9 * 60 * 60 * 1000;
+    const kstNow = new Date(Date.now() + KST_OFFSET);
+    const todayKstStr = kstNow.toISOString().slice(0, 10);
+    const todayStart = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()));
+
+    const rangeStartDate = new Date(todayStart);
+    rangeStartDate.setUTCDate(todayStart.getUTCDate() - (range - 1));
+    const rangeStartStr = rangeStartDate.toISOString().slice(0, 10);
+
+    const [pvRes, vlRes, cvRes, qtRes] = await Promise.all([
+      supabase.from('page_visits')
+        .select('src, visitor_key, created_at')
+        .gte('created_at', rangeStartDate.toISOString())
+        .limit(50000),
+      supabase.from('visitor_logs')
+        .select('session_id, src, visited_date')
+        .gte('visited_date', rangeStartStr)
+        .limit(50000),
+      supabase.from('conversations')
+        .select('session_id, started_at, src')
+        .is('deleted_at', null)
+        .gte('started_at', rangeStartDate.toISOString())
+        .limit(50000),
+      supabase.from('quotes')
+        .select('quote_number, created_at, source, status')
+        .gte('created_at', rangeStartDate.toISOString())
+        .limit(50000),
+    ]);
+
+    const pageVisitRows = pvRes.data || [];
+    const visitorRows   = vlRes.data || [];
+    const convRows      = cvRes.data || [];
+    const quoteRows     = qtRes.data || [];
+
+    const visitorsTodaySet = new Set(
+      visitorRows.filter(v => v.visited_date === todayKstStr).map(v => v.session_id).filter(Boolean)
+    );
+    const engagedTodaySet = new Set(
+      convRows.filter(c => new Date(c.started_at) >= todayStart && c.session_id).map(c => c.session_id)
+    );
+    const engagedTodayInVisited = [...engagedTodaySet].filter(id => visitorsTodaySet.has(id));
+
+    const quotedToday = quoteRows.filter(q => new Date(q.created_at) >= todayStart).length;
+    const submittedToday = quoteRows.filter(q =>
+      new Date(q.created_at) >= todayStart && q.status && q.status !== '접수'
+    ).length;
+
+    const daily = [];
+    for (let i = range - 1; i >= 0; i--) {
+      const d = new Date(todayStart);
+      d.setUTCDate(todayStart.getUTCDate() - i);
+      const dStr = d.toISOString().slice(0, 10);
+      const dNext = new Date(d); dNext.setUTCDate(d.getUTCDate() + 1);
+
+      const visitorsOnDay = new Set(
+        visitorRows.filter(v => v.visited_date === dStr).map(v => v.session_id).filter(Boolean)
+      );
+      const engagedOnDay = new Set(
+        convRows.filter(c => {
+          const t = new Date(c.started_at);
+          return t >= d && t < dNext && c.session_id;
+        }).map(c => c.session_id)
+      );
+      const quotedOnDay = quoteRows.filter(q => {
+        const t = new Date(q.created_at);
+        return t >= d && t < dNext;
+      }).length;
+
+      daily.push({
+        date: dStr,
+        visitors: visitorsOnDay.size,
+        engaged: [...engagedOnDay].filter(id => visitorsOnDay.has(id)).length,
+        quoted: quotedOnDay,
+      });
+    }
+
+    const totalVisitors = new Set(visitorRows.map(v => v.session_id).filter(Boolean)).size;
+    const totalEngaged = new Set(
+      convRows.filter(c => c.session_id).map(c => c.session_id)
+    ).size;
+    const totalQuoted = quoteRows.length;
+    const totalSubmitted = quoteRows.filter(q => q.status && q.status !== '접수').length;
+
+    const _emptyBucket = () => ({
+      landing: new Set(),
+      visitors: new Set(),
+      engaged: new Set(),
+      quoted: 0,
+      submitted: 0,
+    });
+    const sourceMap = new Map();
+    pageVisitRows.forEach(p => {
+      const key = p.src || '직접';
+      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
+      if (p.visitor_key) sourceMap.get(key).landing.add(p.visitor_key);
+    });
+    visitorRows.forEach(v => {
+      const key = v.src || '직접';
+      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
+      if (v.session_id) sourceMap.get(key).visitors.add(v.session_id);
+    });
+    convRows.forEach(c => {
+      const key = c.src || '직접';
+      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
+      if (c.session_id) sourceMap.get(key).engaged.add(c.session_id);
+    });
+    quoteRows.forEach(q => {
+      const key = q.source || '직접';
+      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
+      sourceMap.get(key).quoted++;
+      if (q.status && q.status !== '접수') sourceMap.get(key).submitted++;
+    });
+
+    const bySource = [...sourceMap.entries()].map(([src, m]) => {
+      const l = m.landing.size;
+      const v = m.visitors.size;
+      const e = m.engaged.size;
+      return {
+        src,
+        landing:   l,
+        visitors:  v,
+        engaged:   e,
+        quoted:    m.quoted,
+        submitted: m.submitted,
+        engageRate: v > 0 ? Math.round((e / v) * 1000) / 10 : 0,
+        quoteRate:  v > 0 ? Math.round((m.quoted / v) * 1000) / 10 : 0,
+        chatRate:   l > 0 ? Math.round((v / l) * 1000) / 10 : 0,
+      };
+    }).sort((a, b) => (b.landing || b.visitors) - (a.landing || a.visitors));
+
+    const hourly = Array.from({ length: 24 }, (_, h) => ({ hour: h, conversations: 0 }));
+    convRows.forEach(c => {
+      const t = new Date(c.started_at);
+      if (t >= todayStart) {
+        const kstHour = new Date(t.getTime() + KST_OFFSET).getUTCHours();
+        hourly[kstHour].conversations++;
+      }
+    });
+
+    res.json({
+      kpi: {
+        visitorsToday:  visitorsTodaySet.size,
+        engagedToday:   engagedTodayInVisited.length,
+        quotedToday,
+        submittedToday,
+      },
+      daily,
+      funnel: {
+        visited:   totalVisitors,
+        engaged:   totalEngaged,
+        quoted:    totalQuoted,
+        submitted: totalSubmitted,
+      },
+      bySource,
+      hourly,
+      range,
+    });
+  } catch (err) {
+    console.error('방문자 통계 조회 오류:', err.message);
+    res.status(500).json({ error: '방문자 통계를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
 // ── 세션 상태 폴링 API (고객 → 서버, 2초마다) ─────────────────
 // 고객이 admin 난입 여부와 pending 메시지를 확인
 app.get('/api/session/status', (req, res) => {
@@ -1241,8 +1875,11 @@ app.get('/api/session/status', (req, res) => {
   const sess = sessions.get(id);
   sess.lastActivity = new Date();
 
-  // pending 메시지를 한 번에 전달하고 비움
-  const pending = [...sess.pendingAdminMsgs];
+  // 읽음 처리 전까지 매 poll에 동봉한다. 클라이언트는 mid로 중복 제거하므로
+  // 응답 유실·서버 재시작 사이에도 관리자 메시지가 사라지지 않는다.
+  const pending = sess.messages.filter(message =>
+    message.fromAdmin === true && message.read !== true && message.mid
+  );
   sess.pendingAdminMsgs = [];
 
   /* drain 유실 / 페이지 재접속 대비 — 안읽음 admin mid 항상 동봉.
@@ -1344,7 +1981,7 @@ app.get('/api/admin/stats', async (_req, res) => {
 
     const inPeriod = (dt, from) => new Date(dt) >= from;
 
-    /* 오늘 방문자 통계 (visitor_logs 기반) — 피드백 반영: 말 안 걸어도 접속한 사람 포함 */
+    /* 오늘 방문자 통계 (visitor_logs 기반) — 피드백 반영 */
     const todayKstStr = (() => {
       const y = kstNow.getUTCFullYear();
       const m = String(kstNow.getUTCMonth() + 1).padStart(2, '0');
@@ -1354,7 +1991,6 @@ app.get('/api/admin/stats', async (_req, res) => {
     let visitorsToday = 0;
     let engagedToday  = 0;
     try {
-      // 오늘 방문 unique session_id 집계
       const { data: vlData, error: vlErr } = await supabase
         .from('visitor_logs')
         .select('session_id')
@@ -1363,7 +1999,6 @@ app.get('/api/admin/stats', async (_req, res) => {
       if (!vlErr && vlData) {
         const uniqueVisitorIds = new Set(vlData.map(v => v.session_id).filter(Boolean));
         visitorsToday = uniqueVisitorIds.size;
-        // 그 중 실제 대화한 사람 = 오늘 시작된 conversations row의 session_id와 교집합
         for (const r of rows) {
           if (inPeriod(r.started_at, todayStart) && r.session_id && uniqueVisitorIds.has(r.session_id)) {
             engagedToday++;
@@ -1382,192 +2017,12 @@ app.get('/api/admin/stats', async (_req, res) => {
       newToday: Object.values(firstSeen).filter(dt => dt >= todayStart).length,
       newWeek:  Object.values(firstSeen).filter(dt => dt >= weekStart).length,
       newMonth: Object.values(firstSeen).filter(dt => dt >= monthStart).length,
-      // 오늘 방문 vs 대화 (피드백)
       visitorsToday,
       engagedToday,
     });
   } catch (err) {
     console.error('통계 조회 오류:', err.message);
     res.status(500).json({ error: '통계를 불러오는 중 오류가 발생했습니다.' });
-  }
-});
-
-// ── 어드민: 방문자 통계 통합 API (KPI·추이·깔때기·소스별·시간대) ───
-app.get('/api/admin/stats/visitors', async (req, res) => {
-  try {
-    const range = Math.min(Math.max(parseInt(req.query.range) || 7, 1), 90);
-    const KST_OFFSET = 9 * 60 * 60 * 1000;
-    const kstNow = new Date(Date.now() + KST_OFFSET);
-    const todayKstStr = kstNow.toISOString().slice(0, 10);
-    const todayStart = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()));
-
-    // 기간 시작 (KST date string)
-    const rangeStartDate = new Date(todayStart);
-    rangeStartDate.setUTCDate(todayStart.getUTCDate() - (range - 1));
-    const rangeStartStr = rangeStartDate.toISOString().slice(0, 10);
-
-    // 병렬 쿼리: page_visits(랜딩), visitor_logs(채팅 진입), conversations, quotes
-    const [pvRes, vlRes, cvRes, qtRes] = await Promise.all([
-      supabase.from('page_visits')
-        .select('src, visitor_key, created_at')
-        .gte('created_at', rangeStartDate.toISOString())
-        .limit(50000),
-      supabase.from('visitor_logs')
-        .select('session_id, src, visited_date')
-        .gte('visited_date', rangeStartStr)
-        .limit(50000),
-      supabase.from('conversations')
-        .select('session_id, started_at, src')
-        .is('deleted_at', null)
-        .gte('started_at', rangeStartDate.toISOString())
-        .limit(50000),
-      supabase.from('quotes')
-        .select('quote_number, created_at, source, status')
-        .gte('created_at', rangeStartDate.toISOString())
-        .limit(50000),
-    ]);
-
-    const pageVisitRows = pvRes.data || [];
-    const visitorRows   = vlRes.data || [];
-    const convRows      = cvRes.data || [];
-    const quoteRows     = qtRes.data || [];
-
-    // 오늘 방문/대화 session_id 집합
-    const visitorsTodaySet = new Set(
-      visitorRows.filter(v => v.visited_date === todayKstStr).map(v => v.session_id).filter(Boolean)
-    );
-    const engagedTodaySet = new Set(
-      convRows.filter(c => new Date(c.started_at) >= todayStart && c.session_id).map(c => c.session_id)
-    );
-    const engagedTodayInVisited = [...engagedTodaySet].filter(id => visitorsTodaySet.has(id));
-
-    // 오늘 견적/접수
-    const quotedToday = quoteRows.filter(q => new Date(q.created_at) >= todayStart).length;
-    const submittedToday = quoteRows.filter(q =>
-      new Date(q.created_at) >= todayStart && q.status && q.status !== '접수'
-    ).length;
-
-    // 일별 추이 (range 일)
-    const daily = [];
-    for (let i = range - 1; i >= 0; i--) {
-      const d = new Date(todayStart);
-      d.setUTCDate(todayStart.getUTCDate() - i);
-      const dStr = d.toISOString().slice(0, 10);
-      const dNext = new Date(d); dNext.setUTCDate(d.getUTCDate() + 1);
-
-      const visitorsOnDay = new Set(
-        visitorRows.filter(v => v.visited_date === dStr).map(v => v.session_id).filter(Boolean)
-      );
-      const engagedOnDay = new Set(
-        convRows.filter(c => {
-          const t = new Date(c.started_at);
-          return t >= d && t < dNext && c.session_id;
-        }).map(c => c.session_id)
-      );
-      const quotedOnDay = quoteRows.filter(q => {
-        const t = new Date(q.created_at);
-        return t >= d && t < dNext;
-      }).length;
-
-      daily.push({
-        date: dStr,
-        visitors: visitorsOnDay.size,
-        engaged: [...engagedOnDay].filter(id => visitorsOnDay.has(id)).length,
-        quoted: quotedOnDay,
-      });
-    }
-
-    // 전체 기간 깔때기
-    const totalVisitors = new Set(visitorRows.map(v => v.session_id).filter(Boolean)).size;
-    const totalEngaged = new Set(
-      convRows.filter(c => c.session_id).map(c => c.session_id)
-    ).size;
-    const totalQuoted = quoteRows.length;
-    const totalSubmitted = quoteRows.filter(q => q.status && q.status !== '접수').length;
-
-    // 유입소스별 성과 (전체 기간)
-    // landing: page_visits 기준 랜딩 방문 (visitor_key 유니크 카운트)
-    // visitors: visitor_logs 기준 채팅 진입 (session_id 유니크 카운트)
-    // engaged: conversations 기준 실제 대화 시작
-    // quoted/submitted: quotes 기준
-    const _emptyBucket = () => ({
-      landing: new Set(),
-      visitors: new Set(),
-      engaged: new Set(),
-      quoted: 0,
-      submitted: 0,
-    });
-    const sourceMap = new Map();
-    pageVisitRows.forEach(p => {
-      const key = p.src || '직접';
-      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
-      if (p.visitor_key) sourceMap.get(key).landing.add(p.visitor_key);
-    });
-    visitorRows.forEach(v => {
-      const key = v.src || '직접';
-      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
-      if (v.session_id) sourceMap.get(key).visitors.add(v.session_id);
-    });
-    convRows.forEach(c => {
-      const key = c.src || '직접';
-      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
-      if (c.session_id) sourceMap.get(key).engaged.add(c.session_id);
-    });
-    quoteRows.forEach(q => {
-      const key = q.source || '직접';
-      if (!sourceMap.has(key)) sourceMap.set(key, _emptyBucket());
-      sourceMap.get(key).quoted++;
-      if (q.status && q.status !== '접수') sourceMap.get(key).submitted++;
-    });
-
-    const bySource = [...sourceMap.entries()].map(([src, m]) => {
-      const l = m.landing.size;
-      const v = m.visitors.size;
-      const e = m.engaged.size;
-      return {
-        src,
-        landing:   l,
-        visitors:  v,
-        engaged:   e,
-        quoted:    m.quoted,
-        submitted: m.submitted,
-        engageRate: v > 0 ? Math.round((e / v) * 1000) / 10 : 0,
-        quoteRate:  v > 0 ? Math.round((m.quoted / v) * 1000) / 10 : 0,
-        chatRate:   l > 0 ? Math.round((v / l) * 1000) / 10 : 0,
-      };
-    }).sort((a, b) => (b.landing || b.visitors) - (a.landing || a.visitors));
-
-    // 시간대별 분포 (오늘 대화 시작 시각 기준)
-    const hourly = Array.from({ length: 24 }, (_, h) => ({ hour: h, conversations: 0 }));
-    convRows.forEach(c => {
-      const t = new Date(c.started_at);
-      if (t >= todayStart) {
-        const kstHour = new Date(t.getTime() + KST_OFFSET).getUTCHours();
-        hourly[kstHour].conversations++;
-      }
-    });
-
-    res.json({
-      kpi: {
-        visitorsToday:  visitorsTodaySet.size,
-        engagedToday:   engagedTodayInVisited.length,
-        quotedToday,
-        submittedToday,
-      },
-      daily,
-      funnel: {
-        visited:   totalVisitors,
-        engaged:   totalEngaged,
-        quoted:    totalQuoted,
-        submitted: totalSubmitted,
-      },
-      bySource,
-      hourly,
-      range,
-    });
-  } catch (err) {
-    console.error('방문자 통계 조회 오류:', err.message);
-    res.status(500).json({ error: '방문자 통계를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 
@@ -1714,7 +2169,7 @@ app.post('/api/session/typing', (req, res) => {
 });
 
 // ── 어드민: 난입 (AI → admin 모드 전환) ──────────────────────
-app.post('/api/admin/takeover', (req, res) => {
+app.post('/api/admin/takeover', withSerializedSession(async (req, res) => {
   const { sessionId } = req.body;
   const sess = sessions.get(sessionId);
   if (!sess) return res.status(404).json({ error: '세션 없음' });
@@ -1722,11 +2177,18 @@ app.post('/api/admin/takeover', (req, res) => {
   sess.mode = 'admin';
   sess.lastActivity = new Date();
   console.log(`🎯 Admin 난입: 세션 ${sessionId}`);
-  res.json({ ok: true });
-});
+  try {
+    await upsertConversation(sess);
+    res.json({ ok: true });
+  } catch (error) {
+    sess.mode = 'ai';
+    console.error(`[FAIL_TAKEOVER_PERSIST] session=${sess.id} err=${error.message}`);
+    res.status(503).json({ error: '상담원 전환 상태를 저장하지 못했습니다.' });
+  }
+}));
 
 // ── 어드민: 돌려주기 (admin → AI 모드 복귀) ─────────────────
-app.post('/api/admin/release', (req, res) => {
+app.post('/api/admin/release', withSerializedSession(async (req, res) => {
   const { sessionId } = req.body;
   const sess = sessions.get(sessionId);
   if (!sess) return res.status(404).json({ error: '세션 없음' });
@@ -1734,11 +2196,18 @@ app.post('/api/admin/release', (req, res) => {
   sess.mode = 'ai';
   sess.lastActivity = new Date();
   console.log(`🤖 AI 복귀: 세션 ${sessionId}`);
-  res.json({ ok: true });
-});
+  try {
+    await upsertConversation(sess);
+    res.json({ ok: true });
+  } catch (error) {
+    sess.mode = 'admin';
+    console.error(`[FAIL_RELEASE_PERSIST] session=${sess.id} err=${error.message}`);
+    res.status(503).json({ error: 'AI 복귀 상태를 저장하지 못했습니다.' });
+  }
+}));
 
 // ── 어드민: 메시지 전송 ───────────────────────────────────────
-app.post('/api/admin/message', (req, res) => {
+app.post('/api/admin/message', withSerializedSession(async (req, res) => {
   const { sessionId, message } = req.body;
   if (!sessionId || !message) return res.status(400).json({ error: 'sessionId, message 필요' });
   // 입력 검증 — 문자열 + 길이 제한
@@ -1758,12 +2227,22 @@ app.post('/api/admin/message', (req, res) => {
   sess.lastActivity = new Date();
   sess.lastMessageAt = new Date();
 
-  res.json({ ok: true, mid });
-});
+  // 어드민 답변을 DB 에 즉시 보존 (fire-and-forget, 재시도 + Slack 알림)
+  // — admin 모드는 /api/chat 의 upsertConversation 을 안 거치므로 여기서 명시적으로 저장
+  try {
+    await upsertConversation(sess);
+    res.json({ ok: true, mid });
+  } catch (error) {
+    sess.pendingAdminMsgs = sess.pendingAdminMsgs.filter(item => item.mid !== mid);
+    sess.messages = sess.messages.filter(item => item.mid !== mid);
+    console.error(`[FAIL_ADMIN_REPLY_SAVE] session=${sess.id} err=${error.message}`);
+    res.status(503).json({ error: '메시지를 저장하지 못했습니다.' });
+  }
+}));
 
 // ── 고객: 어드민 메시지 읽음 처리 (mark-read) ─────────────────
 // 고객 채팅 탭이 포커스됐을 때 호출 → 어드민 카드의 "안읽음 N" 뱃지 감소
-app.post('/api/session/mark-read', (req, res) => {
+app.post('/api/session/mark-read', withSerializedSession(async (req, res) => {
   const { sessionId, mids } = req.body || {};
   if (!sessionId || !SESSION_ID_RE.test(sessionId) || !sessions.has(sessionId)) {
     return res.status(404).json({ error: 'no session' });
@@ -1777,16 +2256,28 @@ app.post('/api/session/mark-read', (req, res) => {
   const midSet = new Set(
     mids.filter(id => typeof id === 'string' && MID_RE.test(id)).slice(0, 100)
   );
-  let updated = 0;
+  const changed = [];
   for (const m of sess.messages) {
     if (m.fromAdmin && m.mid && midSet.has(m.mid) && !m.read) {
+      changed.push(m);
       m.read = true;
       m.readAt = new Date().toISOString();
-      updated++;
     }
   }
-  res.json({ ok: true, updated });
-});
+  if (changed.length === 0) return res.json({ ok: true, updated: 0 });
+
+  try {
+    await upsertConversation(sess);
+    res.json({ ok: true, updated: changed.length });
+  } catch (error) {
+    for (const message of changed) {
+      message.read = false;
+      delete message.readAt;
+    }
+    console.error(`[FAIL_READ_RECEIPT_SAVE] session=${sessionId} err=${error.message}`);
+    res.status(503).json({ error: '읽음 상태를 저장하지 못했습니다.' });
+  }
+}));
 
 // ── 어드민: 저장된 상담 목록 조회 ────────────────────────────
 app.get('/api/admin/conversations', async (req, res) => {
@@ -1904,26 +2395,17 @@ app.delete('/api/admin/conversations/:id/purge', requireAdmin, async (req, res) 
 });
 
 // ── 어드민: 저장된 상담 상세 (전체 메시지 포함) ─────────────
-// H1 fix: id 충돌 방지 — 두 테이블 자동 폴백 조회
-// ?test=1 힌트 있으면 test_conversations 먼저, 없으면 conversations 먼저
-async function _findConv(req) {
-  const id = req.params.id;
-  const order = req.query.test === '1'
-    ? ['test_conversations', 'conversations']
-    : ['conversations', 'test_conversations'];
-  for (const table of order) {
-    const { data, error } = await supabase
-      .from(table).select('*').eq('id', id).is('deleted_at', null).maybeSingle();
-    if (error) throw error;
-    if (data) return { table, data };
-  }
-  return null;
-}
 app.get('/api/admin/conversations/:id', async (req, res) => {
   try {
-    const found = await _findConv(req);
-    if (!found) return res.status(404).json({ error: '삭제된 상담이거나 존재하지 않습니다' });
-    res.json({ conversation: found.data });
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('id', req.params.id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: '삭제된 상담이거나 존재하지 않습니다' });
+    res.json({ conversation: data });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1983,17 +2465,14 @@ app.delete('/api/admin/memos/:memoId', requireAdmin, async (req, res) => {
 });
 
 // ── 어드민: 저장된 상담 삭제 ─────────────────────────────────
-// H1 fix: 자동 폴백으로 어느 테이블에 있든 정확히 찾아 삭제
 app.delete('/api/admin/conversations/:id', requireAdmin, async (req, res) => {
   try {
-    const found = await _findConv(req);
-    if (!found) return res.status(404).json({ error: '삭제할 상담이 없습니다' });
     const { error } = await supabase
-      .from(found.table)
+      .from('conversations')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', req.params.id);
     if (error) throw error;
-    console.log(`🗑 상담 soft-delete: table=${found.table} id=${req.params.id}`);
+    console.log(`🗑 상담 soft-delete: id=${req.params.id}`);
     res.json({ ok: true });
   } catch (err) {
     console.error(`[FAIL_DELETE_CONV] id=${req.params.id} err=${err.message}`);
@@ -2006,18 +2485,18 @@ app.delete('/api/admin/sessions/:sessionId', requireAdmin, async (req, res) => {
   const sessionId = req.params.sessionId;
   if (!sessionId) return res.status(400).json({ error: 'sessionId 필요' });
   try {
-    // 메모리 세션은 제거 (어차피 휘발성, soft-delete 의미 없음)
-    const existed = sessions.delete(sessionId);
-    // H4 fix: blocklist에 등록 — 같은 sessionId로 1시간 내 재접속 차단
-    markSessionDeleted(sessionId);
-    // DB는 soft-delete (양 테이블 병렬)
+    // DB soft-delete가 모두 확인된 뒤에만 메모리 제거/차단 상태를 확정한다.
     const nowIso = new Date().toISOString();
-    const [r1, r2] = await Promise.allSettled([
-      supabase.from('conversations').update({ deleted_at: nowIso }).eq('session_id', sessionId),
-      supabase.from('test_conversations').update({ deleted_at: nowIso }).eq('session_id', sessionId),
+    await Promise.all([
+      executeSupabase('conversation soft-delete', () =>
+        supabase.from('conversations').update({ deleted_at: nowIso }).eq('session_id', sessionId)
+      ),
+      executeSupabase('test conversation soft-delete', () =>
+        supabase.from('test_conversations').update({ deleted_at: nowIso }).eq('session_id', sessionId)
+      ),
     ]);
-    if (r1.status === 'rejected' || r1.value?.error) console.warn('conversations soft-delete 경고:', r1.reason?.message || r1.value?.error?.message);
-    if (r2.status === 'rejected' || r2.value?.error) console.warn('test_conversations soft-delete 경고:', r2.reason?.message || r2.value?.error?.message);
+    const existed = sessions.delete(sessionId);
+    markSessionDeleted(sessionId);
     console.log(`🗑 라이브 세션 soft-delete: ${sessionId} (memory=${existed})`);
     res.json({ ok: true });
   } catch (err) {
@@ -2027,12 +2506,16 @@ app.delete('/api/admin/sessions/:sessionId', requireAdmin, async (req, res) => {
 });
 
 // ── 어드민: 대화 → 견적접수 등록 ─────────────────────────────
-// H1 fix: 자동 폴백
 app.post('/api/admin/conversations/:id/register-quote', requireAdmin, async (req, res) => {
   try {
-    const found = await _findConv(req);
-    if (!found) return res.status(404).json({ error: '삭제된 상담이거나 존재하지 않습니다' });
-    const c = found.data;
+    const { data: c, error } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('id', req.params.id)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error) throw error;
+    if (!c) return res.status(404).json({ error: '삭제된 상담이거나 존재하지 않습니다' });
 
     const quoteNumber = 'KB-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(Date.now()).slice(-4);
 
@@ -2084,8 +2567,6 @@ function backupRateLimit(req, res, next) {
   }
   _backupLastTs.set(ip, now);
   // M3 fix: 메모리 정리 트리거 완화 — 10개만 넘어도 만료된 항목(10분 이상) 제거
-  //   - 이전: size > 100일 때만 (적은 트래픽 환경에선 영원히 안 비워짐)
-  //   - 이후: size > 10이면 정리 → 소규모 운영에서도 cleanup 작동
   if (_backupLastTs.size > 10) {
     for (const [k, v] of _backupLastTs.entries()) {
       if (now - v > 600_000) _backupLastTs.delete(k);
@@ -2126,7 +2607,7 @@ async function fetchTableAll(table) {
     if (error) throw new Error(`${table}: ${error.message}`);
     if (!data || data.length === 0) break;
     all.push(...data);
-    if (data.length < PAGE) break; // 마지막 페이지
+    if (data.length < PAGE) break;
   }
   return all;
 }
@@ -2310,7 +2791,7 @@ app.post('/api/quote', chatRateLimit, async (req, res) => {
       return res.status(400).json({ error: '전화번호 형식이 올바르지 않습니다' });
     }
 
-    // M1 fix: 첨부 사진 처리 — base64 dataURL → Storage 업로드 → URL을 request_memo에 첨부
+    // 첨부 사진 처리 — base64 dataURL → Storage 업로드 → URL을 request_memo 끝에 첨부
     let photoUrl = '';
     let photoSkipped = ''; // 사용자 응답용 (size/format/upload)
     if (typeof b.file_data === 'string' && /^data:image\/(jpe?g|png|webp);base64,/.test(b.file_data)) {
@@ -2332,10 +2813,13 @@ app.post('/api/quote', chatRateLimit, async (req, res) => {
               photoSkipped = 'format';
               console.warn('[QUOTE_PHOTO_FORMAT] 매직바이트 불일치 — 사진 미저장');
             } else {
-              const fname = `quote-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
+              const requestId = typeof b.request_id === 'string' ? b.request_id : '';
+              const fname = requestId
+                ? `quote-${requestId}.${ext}`
+                : `quote-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.${ext}`;
               const { error: upErr } = await supabase.storage
                 .from(STORAGE_BUCKET)
-                .upload(fname, buf, { contentType: `image/${m[1]}`, upsert: false });
+                .upload(fname, buf, { contentType: `image/${m[1]}`, upsert: !!requestId });
               if (!upErr) {
                 const { data: { publicUrl } } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(fname);
                 photoUrl = publicUrl;
@@ -2357,8 +2841,14 @@ app.post('/api/quote', chatRateLimit, async (req, res) => {
       ? `${memoBase}${memoBase ? '\n\n' : ''}[첨부 사진] ${photoUrl}`
       : memoBase;
 
+    const requestId = typeof b.request_id === 'string' && /^[0-9a-f-]{36}$/i.test(b.request_id)
+      ? b.request_id
+      : null;
     const payload = {
-      quote_number:   'KB-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+      quote_number:   requestId
+        ? 'KB-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + requestId.replace(/-/g, '').slice(0, 6).toUpperCase()
+        : 'KB-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+      request_id:     requestId,
       name:           str(b.name, 50),
       phone:          phoneRaw,
       region:         str(b.region, 200),
@@ -2377,17 +2867,92 @@ app.post('/api/quote', chatRateLimit, async (req, res) => {
       has_photo:      photoUrl ? '사진있음' : str(b.has_photo, 20),
     };
 
-    const { data, error } = await supabase
-      .from('quotes')
-      .insert([payload])
-      .select()
-      .single();
-    if (error) throw error;
+    let data;
+    let deduplicated = false;
+    if (requestId) {
+      const stored = await insertIdempotentQuote({
+        payload,
+        insert: candidate => executeSupabase('form quote insert', () => supabase
+          .from('quotes')
+          .insert([candidate])
+          .select()
+          .single()),
+        findByRequestId: id => executeSupabase('form quote dedup lookup', () => supabase
+          .from('quotes')
+          .select('*')
+          .eq('request_id', id)
+          .maybeSingle()),
+        regenerateQuoteNumber: () =>
+          'KB-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + crypto.randomBytes(3).toString('hex').toUpperCase(),
+      });
+      data = stored.data;
+      deduplicated = stored.deduplicated;
+      Object.assign(payload, stored.payload);
+    } else {
+      data = await executeSupabase('legacy form quote insert', () => supabase
+        .from('quotes')
+        .insert([payload])
+        .select()
+        .single(), { maxAttempts: 1 });
+    }
+    payload.quote_number = data?.quote_number || payload.quote_number;
 
-    console.log(`✅ 견적 폼 접수: ${payload.quote_number} (${payload.name})`);
-    res.json({ ok: true, quote_number: payload.quote_number, id: data?.id, photo_skipped: photoSkipped || null });
+    console.log(`✅ 견적 폼 접수: ${payload.quote_number}`);
+
+    // 응답 photo_skipped 플래그는 아래 res.json에서 같이 보냄
+
+    // Slack 알림 — 폼 제출은 매 건마다 발사 (quote_number 매번 새로 발급)
+    if (!deduplicated) {
+      const parts = [payload.quote_number];
+      if (payload.name)        parts.push(payload.name);
+      if (payload.region)      parts.push(payload.region);
+      if (payload.layout_type) parts.push(payload.layout_type);
+      if (payload.phone)       parts.push(payload.phone);
+      notifySlack('주문폼접수', '💰', parts.join(' / '));
+    }
+
+    // customer 설치 접수 연동 (견적 저장의 선택적 후속 작업)
+    if (payload.phone) {
+      await runOptionalSync(async () => {
+        const now = new Date().toISOString();
+        await executeSupabase('form customer.install upsert', () => supabaseCustomer.from('install').upsert([{
+          name:             payload.name,
+          phone:            payload.phone,
+          status:           '접수',
+          install_type:     payload.layout_type || null,
+          height_ceiling:   payload.height ? String(payload.height) : null,
+          side_a:           payload.width  ? String(payload.width)  : null,
+          side_b:           payload.depth  ? String(payload.depth)  : null,
+          color_frame:      payload.frame_color  || null,
+          color_shelf:      payload.shelf_color  || null,
+          options:          Array.isArray(payload.options) ? payload.options.join(', ') : null,
+          notes:            `견적번호: ${payload.quote_number}` + (payload.request_memo ? `\n${payload.request_memo}` : ''),
+          location:         payload.region || null,
+          inflow_type:      '폼제출',
+          inflow_date:      now.split('T')[0],
+          saved_at:         now,
+          last_changed_at:  now,
+          source_ref:       payload.quote_number,
+        }], { onConflict: 'source_ref' }));
+        console.log(`✅ customer 스키마 저장 (폼제출): ${payload.quote_number}`);
+      }, custErr => {
+        console.error('customer 스키마 저장 오류 (quotes는 저장됨):', custErr.message);
+        notifySlack('고객DB연동실패', '💾', `ctx=QUOTE_FORM_CUSTOMER name=${custErr.name || '?'} code=${custErr.code || '?'}\nerr=${custErr.message}`);
+      });
+    } else {
+      console.log('customer 스키마 저장 건너뜀 (phone 없음)');
+    }
+
+    res.json({
+      ok: true,
+      quote_number: data?.quote_number || payload.quote_number,
+      id: data?.id,
+      deduplicated,
+      photo_skipped: photoSkipped || null,
+    });
   } catch (err) {
     console.error('견적 폼 접수 오류:', err.message);
+    notifySlack('DB저장실패', '💾', `ctx=QUOTE_FORM name=${err.name || '?'} code=${err.code || '?'}\nerr=${err.message}`);
     res.status(500).json({ error: '저장 실패' });
   }
 });
@@ -2476,25 +3041,11 @@ app.patch('/api/quotes/:id', requireAdmin, async (req, res) => {
 // ── 상담 요약 저장 API ─────────────────────────────────────────
 // chat.html에서 "상담 저장" 버튼 클릭 시 호출
 // Claude가 대화 내용을 분석해서 기획서 항목대로 자동 추출 후 Supabase 저장
-// M2 fix: chatRateLimit + 어드민 토큰 or 유효 sessionId 검증
-app.post('/api/summarize', chatRateLimit, async (req, res) => {
+app.post('/api/summarize', requireAdmin, async (req, res) => {
   const { messages } = req.body;
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages 배열이 필요합니다.' });
-  }
-
-  // M2 fix: 인증 — 어드민 토큰 또는 유효 sessionId
-  const auth = req.headers.authorization || '';
-  const isAdminCall = ADMIN_TOKEN && auth === `Bearer ${ADMIN_TOKEN}`;
-  if (!isAdminCall) {
-    const sessionId = req.body?.sessionId;
-    if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 8) {
-      return res.status(401).json({ error: '유효한 세션이 필요합니다' });
-    }
-    if (!sessions.has(sessionId)) {
-      return res.status(403).json({ error: '세션이 등록되지 않았습니다. 페이지를 새로고침해 주세요.' });
-    }
   }
 
   const recentMessages = messages.slice(-30);
@@ -2553,7 +3104,7 @@ app.post('/api/summarize', chatRateLimit, async (req, res) => {
 
     if (error) throw error;
 
-    console.log(`✅ 상담 저장됨: ID ${data.id} / 고객: ${summary.이름 || '미확인'}`);
+    console.log(`✅ 상담 저장됨: ID ${data.id}`);
 
     // ── Notion 저장 ───────────────────────────────────────────
     if (process.env.NOTION_TOKEN) {
@@ -2591,7 +3142,7 @@ app.post('/api/summarize', chatRateLimit, async (req, res) => {
             '상담상태':     { select: { name: '견적완료' } },
           },
         });
-        console.log(`📋 Notion 저장됨: ${summary.이름 || '미확인'}`);
+        console.log(`📋 Notion 저장됨: conversation=${data.id}`);
       } catch (notionErr) {
         // Notion 저장 실패해도 상담 저장은 성공으로 처리
         console.error('⚠️ Notion 저장 실패 (Supabase는 정상):', notionErr.message);
@@ -2606,8 +3157,25 @@ app.post('/api/summarize', chatRateLimit, async (req, res) => {
   }
 });
 
+// ── API 오류 응답 정규화 ─────────────────────────────────────
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+  if (error instanceof multer.MulterError) {
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    return res.status(status).json({ error: '업로드 요청이 허용 범위를 벗어났습니다.' });
+  }
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({ error: '요청 본문이 너무 큽니다.' });
+  }
+  if (req.path === '/api/upload') {
+    return res.status(400).json({ error: '지원하지 않는 파일 형식입니다.' });
+  }
+  console.error(`[UNHANDLED_API_ERROR] method=${req.method} path=${req.path} name=${error?.name || 'Error'}`);
+  res.status(500).json({ error: '요청을 처리하지 못했습니다.' });
+});
+
 // ── customer 스키마 probe (재방문 감지에 필요한 컬럼 존재 여부) ──
-// M1 fix: detectReturningCustomer가 사용하는 모든 컬럼 검증 (session_id, layout, size_raw, frame_color, shelf_color, estimated_price, started_at, deleted_at).
+// M1 fix: detectReturningCustomer가 사용하는 모든 컬럼 검증 (8개).
 // 하나라도 없으면 detectReturningCustomer는 즉시 스킵 (안전 fallback).
 let customerSchemaAvailable = false;
 async function probeCustomerSchema() {

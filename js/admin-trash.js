@@ -133,7 +133,7 @@
       wrap.innerHTML = '로딩 중…';
     }
     try {
-      const res = await fetch(`${SERVER}/api/admin/conversations/trash`, {
+      const res = await adminFetch(`${SERVER}/api/admin/conversations/trash`, {
         headers: adminHeaders(),
       });
       if (!res.ok) {
@@ -160,7 +160,7 @@
   async function restoreConversation(id) {
     if (!id) return;
     try {
-      const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/restore`, {
+      const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/restore`, {
         method: 'PATCH',
         headers: adminHeaders(),
       });
@@ -186,7 +186,7 @@
     if (!id) return;
     if (!confirm('이 상담을 영구 삭제합니다.\n복구할 수 없습니다. 계속할까요?')) return;
     try {
-      const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/purge`, {
+      const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/purge`, {
         method: 'DELETE',
         headers: adminHeaders(),
       });

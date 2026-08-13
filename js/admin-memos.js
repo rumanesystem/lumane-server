@@ -48,7 +48,7 @@ window.hdLoadMemos = async function(convId) {
     return;
   }
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(convId)}/memos`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(convId)}/memos`, {
       headers: adminHeaders(),
     });
     if (!res.ok) throw new Error('메모 불러오기 실패');
@@ -68,7 +68,7 @@ window.hdAddMemo = async function() {
   // 경쟁 조건 가드 — 클로저로 캡처해서 fetch 도중 모달이 다른 대화로 갈아타도 원래 대화에만 박힘
   const capturedId = _hdMemoCurrentConvId;
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(capturedId)}/memos`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(capturedId)}/memos`, {
       method: 'POST',
       headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
@@ -77,6 +77,7 @@ window.hdAddMemo = async function() {
       const txt = await res.text();
       throw new Error(txt || '메모 추가 실패');
     }
+    // 추가 성공 후, 사용자가 같은 대화 보고 있을 때만 입력창 비우고 리로드
     if (_hdMemoCurrentConvId === capturedId) {
       input.value = '';
       await window.hdLoadMemos(capturedId);
@@ -88,12 +89,14 @@ window.hdAddMemo = async function() {
 };
 
 window.hdDeleteMemo = async function(memoId) {
+  // NaN 가드 — 잘못된 ID로 호출 시 차단
   const idNum = parseInt(memoId, 10);
   if (!Number.isFinite(idNum) || idNum <= 0) return;
   if (!confirm('이 메모를 삭제할까요?')) return;
+  // 경쟁 조건 가드 — fetch 도중 모달 바뀌면 현재 대화 기준으로 리로드 결정
   const capturedId = _hdMemoCurrentConvId;
   try {
-    const res = await fetch(`${SERVER}/api/admin/memos/${idNum}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/memos/${idNum}`, {
       method: 'DELETE',
       headers: adminHeaders(),
     });
@@ -156,7 +159,7 @@ window.lvLoadMemos = async function(convId) {
   // 사이드 패널 (flex column) 노출
   if (panel) panel.style.display = 'flex';
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(convId)}/memos`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(convId)}/memos`, {
       headers: adminHeaders(),
     });
     if (!res.ok) throw new Error('메모 불러오기 실패');
@@ -175,7 +178,7 @@ window.lvAddMemo = async function() {
   if (!body) return;
   const capturedId = _lvMemoCurrentConvId;
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(capturedId)}/memos`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(capturedId)}/memos`, {
       method: 'POST',
       headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
@@ -200,7 +203,7 @@ window.lvDeleteMemo = async function(memoId) {
   if (!confirm('이 메모를 삭제할까요?')) return;
   const capturedId = _lvMemoCurrentConvId;
   try {
-    const res = await fetch(`${SERVER}/api/admin/memos/${idNum}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/memos/${idNum}`, {
       method: 'DELETE',
       headers: adminHeaders(),
     });

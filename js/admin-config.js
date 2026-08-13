@@ -2,19 +2,114 @@
    Admin 설정값 & 전역 상태 & 공통 유틸
 ================================================================ */
 
-// 서버 주소
-const SERVER = 'https://lumane-server.onrender.com';
+// 관리자 API는 인증 쿠키가 적용되는 same-origin 경로만 사용합니다.
+const SERVER = '';
 
-// Admin API 인증 토큰 — server.js .env의 ADMIN_TOKEN 값과 일치해야 합니다
-const ADMIN_TOKEN = '423920d58ecc5da3986baaa5580e8d90933ef98544cddbd9e497066af1967e7b';
+function readCookie(name) {
+  const prefix = `${encodeURIComponent(name)}=`;
+  const value = document.cookie.split('; ').find(cookie => cookie.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : '';
+}
 
 /** Admin API 공통 헤더 */
 function adminHeaders() {
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${ADMIN_TOKEN}`,
-  };
+  const headers = { 'Content-Type': 'application/json' };
+  const csrfToken = readCookie('lumane_admin_csrf');
+  if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  return headers;
 }
+
+async function logoutAdmin() {
+  try {
+    await fetch('/api/admin-auth/logout', { method: 'POST', headers: adminHeaders() });
+  } finally {
+    window.location.replace('/admin');
+  }
+}
+window.logoutAdmin = logoutAdmin;
+
+let adminAuthRedirecting = false;
+let adminHealthTimer = null;
+let adminSessionTimer = null;
+let adminUpdateTimer = null;
+
+function stopAdminActivity() {
+  for (const timer of [
+    livePollTimer,
+    liveMsgPollTimer,
+    bgPollTimer,
+    historyBgPollTimer,
+    convPollTimer,
+    adminHealthTimer,
+    adminSessionTimer,
+    adminUpdateTimer,
+  ]) {
+    if (timer) clearInterval(timer);
+  }
+  livePollTimer = null;
+  liveMsgPollTimer = null;
+  bgPollTimer = null;
+  historyBgPollTimer = null;
+  convPollTimer = null;
+  adminHealthTimer = null;
+  adminSessionTimer = null;
+  adminUpdateTimer = null;
+  serverOnline = false;
+}
+
+function redirectToAdminLogin() {
+  if (adminAuthRedirecting) return;
+  adminAuthRedirecting = true;
+  stopAdminActivity();
+  window.location.replace('/admin');
+}
+
+function isAdminAuthActive() {
+  return !adminAuthRedirecting;
+}
+
+function isProtectedAdminRequest(input) {
+  const rawUrl = typeof input === 'string' ? input : input?.url;
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    if (url.origin !== window.location.origin) return false;
+    return url.pathname === '/api/admin'
+      || url.pathname.startsWith('/api/admin/')
+      || url.pathname === '/api/quotes'
+      || url.pathname.startsWith('/api/quotes/')
+      || url.pathname === '/api/summarize';
+  } catch {
+    return false;
+  }
+}
+
+async function adminFetch(input, init) {
+  if (!isAdminAuthActive()) {
+    return new Response(null, { status: 401, statusText: 'Unauthorized' });
+  }
+  const response = await fetch(input, init);
+  if (response.status === 401 && isProtectedAdminRequest(input)) {
+    redirectToAdminLogin();
+  }
+  return response;
+}
+
+async function verifyAdminSession() {
+  try {
+    const response = await fetch('/api/admin-auth/session', { credentials: 'same-origin' });
+    if (response.ok) return true;
+    if (response.status === 401) redirectToAdminLogin();
+    return false;
+  } catch {
+    // 일시적인 네트워크 오류는 기존 온라인 상태 표시가 처리한다.
+    return false;
+  }
+}
+window.verifyAdminSession = verifyAdminSession;
+window.stopAdminActivity = stopAdminActivity;
+window.adminFetch = adminFetch;
+window.isAdminAuthActive = isAdminAuthActive;
 
 /* ── 전역 상태 ── */
 let currentQuoteId  = null;   // 현재 열린 견적 ID
@@ -126,7 +221,7 @@ async function renameCustomer(kind, id, currentName, ev) {
     ? `${SERVER}/api/admin/sessions/${encodeURIComponent(id)}/name`
     : `${SERVER}/api/admin/conversations/${encodeURIComponent(id)}/name`;
   try {
-    const res = await fetch(url, {
+    const res = await adminFetch(url, {
       method: 'PATCH',
       headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName }),

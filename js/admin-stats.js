@@ -2,6 +2,7 @@
    방문자 통계 (Visitor Stats)
    - KPI 카드, 일별 추이, 전환 깔때기, 시간대별, 유입소스별 성과
    - admin.html '방문자 통계' 탭에서 사용
+   - dev (lumane-server) 동기화본
 ================================================================ */
 
 let currentVsRange = 7;
@@ -20,7 +21,6 @@ async function loadVisitorStats(range = 7) {
   currentVsRange = range;
   window.currentVsRange = range;
 
-  // 토글 버튼 활성 상태
   document.querySelectorAll('.vs-range-btn').forEach(b => {
     b.classList.toggle('active', Number(b.dataset.range) === range);
   });
@@ -28,7 +28,7 @@ async function loadVisitorStats(range = 7) {
   if (rangeLabelEl) rangeLabelEl.textContent = `${range}일`;
 
   try {
-    const res = await fetch(`${SERVER}/api/admin/stats/visitors?range=${range}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/stats/visitors?range=${range}`, {
       headers: typeof adminHeaders === 'function' ? adminHeaders() : {},
     });
     if (!res.ok) throw new Error('통계 조회 실패');

@@ -118,7 +118,7 @@
     toast('데이터 수집 중... (보통 10~30초)', 'info');
     let res;
     try {
-      res = await fetch(url, { headers: adminHeaders() });
+      res = await adminFetch(url, { headers: adminHeaders() });
     } catch (err) {
       toast(`❌ 백업 실패: ${err.message || '네트워크 오류'}. 잠시 후 다시 시도해 주세요.`, 'error');
       return;

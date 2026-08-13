@@ -35,7 +35,7 @@ async function checkHistoryCount() {
     return;
   }
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
     if (!res.ok) return;
     // await 이후 탭 상태 재확인 (race condition 방지)
     if (document.querySelector('.tab-btn.active')?.id === 'tab-dashboard') return;
@@ -77,11 +77,9 @@ const _SRC_STATS_CLIENT_TTL = 60 * 1000;
 const _SRC_PERIODS = ['today', 'week', 'month', 'all'];
 
 async function _fetchSrcStats(period) {
-  /* 캐시 히트 */
   const cached = _srcStatsCache.get(period);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
-  /* 네트워크 */
-  const res = await fetch(`${SERVER}/api/admin/source-stats?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
+  const res = await adminFetch(`${SERVER}/api/admin/source-stats?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
   if (!res.ok) throw new Error(res.status);
   const data = await res.json();
   _srcStatsCache.set(period, { data, expiresAt: Date.now() + _SRC_STATS_CLIENT_TTL });
@@ -142,17 +140,9 @@ window.loadSourceStats = loadSourceStats;
    (프리워밍만 하면 첫 화면이 빈 상태로 남고, 다른 버튼 누르고 돌아와야 보이는 회귀 발생) */
 function prewarmSourceStats() {
   _SRC_PERIODS.forEach(p => { _fetchSrcStats(p).catch(() => {}); });
-  /* 기본 활성 기간 'today' 첫 렌더 발동 — 캐시 히트면 즉시, 미스면 fetch 후 표시.
-     sourceStatsList DOM이 아직 없으면 loadSourceStats 안에서 early return → 안전 */
   loadSourceStats('today');
 }
 window.prewarmSourceStats = prewarmSourceStats;
-/* 스크립트 로드 시 자동 발동 — 어드민이 켜지자마자 백그라운드로 캐시 채움 */
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', prewarmSourceStats);
-} else {
-  prewarmSourceStats();
-}
 
 /* ── 대시보드에서 저장 상담 삭제 ── */
 async function deleteSavedConvFromDash(id, ev) {
@@ -160,7 +150,7 @@ async function deleteSavedConvFromDash(id, ev) {
   if (!id) return;
   if (!confirm('이 상담 기록을 삭제하시겠습니까? 복구할 수 없습니다.')) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}`, {
       method: 'DELETE', headers: adminHeaders(),
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || res.status); }
@@ -180,7 +170,7 @@ async function deleteLiveSessionFromDash(sessionId, ev) {
   if (!sessionId) return;
   if (!confirm('이 진행 중인 대화를 삭제하시겠습니까? 메모리·DB 모두에서 제거됩니다.')) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/sessions/${encodeURIComponent(sessionId)}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE', headers: adminHeaders(),
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || res.status); }
@@ -218,7 +208,7 @@ async function fetchDashboardConversations() {
   if (!serverOnline) return;
   if (typeof document !== 'undefined' && document.hidden) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
     if (!res.ok) return;
     const data = await res.json();
     setCachedConversations((data.conversations || []).slice(0, 30));

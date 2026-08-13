@@ -1,0 +1,75 @@
+name: Deploy to cloudtype
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run server tests
+        run: npm run test:server
+
+      - name: Verify frontend
+        run: npm run frontend:verify
+
+      - name: Check server syntax
+        run: node --check server.js
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        uses: cloudtype-github-actions/deploy@v1
+        with:
+          token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          project: rumanesystem/lumane-cloudtype
+          stage: main
+          yaml: >
+            name: lumane-cloudtype
+
+            app: node@24
+
+            options:
+              ports: "3001"
+              env:
+                - name: ANTHROPIC_API_KEY
+                  value: ${{ secrets.ANTHROPIC_API_KEY }}
+                - name: NOTION_TOKEN
+                  value: ${{ secrets.NOTION_TOKEN }}
+                - name: SUPABASE_SECRET_KEY
+                  value: ${{ secrets.SUPABASE_SECRET_KEY }}
+                - name: SUPABASE_URL
+                  value: ${{ secrets.SUPABASE_URL }}
+                - name: DB_SCHEMA
+                  value: ${{ secrets.DB_SCHEMA }}
+                - name: SLACK_WEBHOOK_URL
+                  value: ${{ secrets.SLACK_WEBHOOK_URL }}
+                - name: AI_PROVIDER
+                  value: anthropic
+                - name: ADMIN_URL
+                  value: https://port-0-lumane-cloudtype-mojs7tod1c6ae3f9.sel3.cloudtype.app/admin.html
+              buildenv: []
+              healthz: /api/health
+            context:
+              git:
+                url: https://github.com/${{ github.repository }}.git
+                ref: ${{ github.sha }}

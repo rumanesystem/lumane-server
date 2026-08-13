@@ -59,7 +59,7 @@ async function saveConversationManual() {
     return;
   }
   try {
-    const res = await fetch(`${SERVER}/api/admin/save-conversation`, {
+    const res = await adminFetch(`${SERVER}/api/admin/save-conversation`, {
       method: 'POST',
       headers: adminHeaders(),
       body: JSON.stringify({ sessionId: liveSelectedId }),
@@ -90,7 +90,7 @@ async function saveConversationManual() {
 async function takeoverSession() {
   if (!liveSelectedId) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/takeover`, {
+    const res = await adminFetch(`${SERVER}/api/admin/takeover`, {
       method: 'POST',
       headers: adminHeaders(),
       body: JSON.stringify({ sessionId: liveSelectedId }),
@@ -109,7 +109,7 @@ async function takeoverSession() {
 async function releaseSession() {
   if (!liveSelectedId) return;
   try {
-    const res = await fetch(`${SERVER}/api/admin/release`, {
+    const res = await adminFetch(`${SERVER}/api/admin/release`, {
       method: 'POST',
       headers: adminHeaders(),
       body: JSON.stringify({ sessionId: liveSelectedId }),
@@ -268,18 +268,13 @@ async function sendAdminMsg() {
       const name = file.name && file.name !== 'image.png' ? file.name : `screenshot-${Date.now()}.png`;
       const fd   = new FormData();
       fd.append('file', file, name);
-      /* H2 fix: 어드민 인증 — Authorization만 부착 (Content-Type은 multipart boundary 자동 설정용으로 비워둠) */
-      const up = await fetch(`${SERVER}/api/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
-        body: fd,
-      });
+      const up = await fetch(`${SERVER}/api/upload`, { method: 'POST', body: fd });
       if (!up.ok) throw new Error('upload');
       const upData = await up.json();
       if (!upData.success) throw new Error('upload');
       const fullUrl    = upData.url.startsWith('http') ? upData.url : `${location.origin}${upData.url}`;
       const msgContent = upData.isImage ? `[이미지]\n${fullUrl}` : `[파일: ${name}]\n${fullUrl}`;
-      const res = await fetch(`${SERVER}/api/admin/message`, {
+      const res = await adminFetch(`${SERVER}/api/admin/message`, {
         method: 'POST',
         headers: adminHeaders(),
         body: JSON.stringify({ sessionId: liveSelectedId, message: msgContent }),
@@ -290,7 +285,7 @@ async function sendAdminMsg() {
 
     /* 텍스트 전송 */
     if (text) {
-      const res = await fetch(`${SERVER}/api/admin/message`, {
+      const res = await adminFetch(`${SERVER}/api/admin/message`, {
         method: 'POST',
         headers: adminHeaders(),
         body: JSON.stringify({ sessionId: liveSelectedId, message: text }),
@@ -314,7 +309,7 @@ async function sendAdminMsg() {
 /* ── 타이핑 상태 전송 ── */
 function sendAdminTyping(isTyping) {
   if (!liveSelectedId) return;
-  fetch(`${SERVER}/api/admin/typing`, {
+  adminFetch(`${SERVER}/api/admin/typing`, {
     method: 'POST',
     headers: adminHeaders(),
     body: JSON.stringify({ sessionId: liveSelectedId, typing: isTyping }),

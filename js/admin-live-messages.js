@@ -41,7 +41,7 @@ async function selectLiveSession(sessionId, byClick = false) {
   await fetchLiveSessionMsgs();
 
   // await 동안 다른 세션이 선택됐으면 타이머 설정하지 않음 (stale 방지)
-  if (liveSelectedId !== sessionId) return;
+  if (!isAdminAuthActive() || liveSelectedId !== sessionId) return;
 
   // 스크롤 이벤트 리스너 초기화 (1회)
   initLiveMsgsScrollListener();
@@ -75,7 +75,7 @@ async function fetchLiveSessionMsgs() {
   if (!liveSelectedId || !serverOnline) return;
   if (typeof document !== 'undefined' && document.hidden) return;
   try {
-    const res = await fetch(
+    const res = await adminFetch(
       `${SERVER}/api/admin/session/${encodeURIComponent(liveSelectedId)}`,
       { headers: adminHeaders() }
     );
@@ -421,6 +421,91 @@ function renderLiveSummary(sess) {
 /**
  * 오른쪽 채팅 패널 렌더링
  */
+function parseLiveAttachment(content) {
+  const rawContent = String(content || '');
+  const imageMatch = rawContent.match(/^\[이미지\]\r?\n([^\r\n]+)$/);
+  const fileMatch = rawContent.match(/^\[파일: ([^\]\r\n]+)\]\r?\n([^\r\n]+)$/);
+  if (!imageMatch && !fileMatch) return null;
+
+  const rawUrl = imageMatch ? imageMatch[1] : fileMatch[2];
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null;
+
+  if (imageMatch) {
+    return { kind: 'image', url: parsedUrl.href };
+  }
+
+  const fileName = fileMatch[1];
+  const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+  const mediaType = /^(mp4|webm|ogg|mov)$/.test(ext)
+    ? 'video'
+    : /^(mp3|wav|ogg|m4a|aac)$/.test(ext)
+      ? 'audio'
+      : 'file';
+  return { kind: 'file', fileName, mediaType, url: parsedUrl.href };
+}
+
+function createLiveAttachmentElement(attachment, documentRef = document, windowRef = window) {
+  const root = documentRef.createElement('span');
+
+  if (attachment.kind === 'image') {
+    const failedUrls = windowRef._failedImgUrls || (windowRef._failedImgUrls = new Set());
+    if (failedUrls.has(attachment.url)) {
+      root.textContent = '[이미지 없음]';
+      root.style.cssText = 'font-size:12px;color:#9ca3af;';
+      return root;
+    }
+
+    const image = documentRef.createElement('img');
+    image.src = attachment.url;
+    image.style.cssText = 'max-width:200px;border-radius:8px;display:block;cursor:pointer;';
+    image.addEventListener('click', () => {
+      windowRef.open(attachment.url, '_blank', 'noopener,noreferrer');
+    });
+    image.addEventListener('error', () => {
+      image.style.display = 'none';
+      failedUrls.add(attachment.url);
+    });
+
+    const downloadButton = documentRef.createElement('button');
+    downloadButton.type = 'button';
+    downloadButton.className = 'img-download-btn';
+    downloadButton.textContent = '⬇ 다운로드';
+    downloadButton.addEventListener('click', () => windowRef._downloadImg(attachment.url));
+
+    root.appendChild(image);
+    root.appendChild(downloadButton);
+    return root;
+  }
+
+  if (attachment.mediaType === 'video' || attachment.mediaType === 'audio') {
+    const media = documentRef.createElement(attachment.mediaType);
+    media.src = attachment.url;
+    media.controls = true;
+    media.preload = 'metadata';
+    media.style.cssText = attachment.mediaType === 'video'
+      ? 'max-width:220px;border-radius:8px;display:block;'
+      : 'max-width:220px;display:block;';
+    root.appendChild(media);
+    return root;
+  }
+
+  root.appendChild(documentRef.createTextNode('📎 '));
+  const link = documentRef.createElement('a');
+  link.href = attachment.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.cssText = 'color:inherit;text-decoration:underline;';
+  link.textContent = attachment.fileName;
+  root.appendChild(link);
+  return root;
+}
+
 function renderLiveChatPanel(sess) {
   const isAdmin = sess.mode === 'admin';
   liveAdminMode = isAdmin;
@@ -442,6 +527,7 @@ function renderLiveChatPanel(sess) {
     ? `<button class="btn btn-outline" onclick="releaseSession()" style="font-size:13px;">🤖 AI에게 넘기기</button>`
     : `<button class="btn btn-primary" onclick="takeoverSession()" style="font-size:13px;">👩‍💼 난입하기</button>`;
 
+  const liveAttachments = [];
   msgs.innerHTML = (sess.messages || []).map(m => {
     const isUser     = m.role === 'user';
     const isAdminMsg = m.fromAdmin;
@@ -455,31 +541,13 @@ function renderLiveChatPanel(sess) {
       rawContent = replyMatch[2];
     }
 
-    /* 이미지/파일 첨부 패턴 감지 */
-    const imgMatch  = rawContent.match(/^\[이미지\]\n(https?:\/\/\S+)$/);
-    const fileMatch = rawContent.match(/^\[파일: ([^\]]+)\]\n(https?:\/\/\S+)$/);
+    /* 첨부 URL은 검증 후 DOM property와 이벤트 리스너로만 삽입 */
+    const attachment = parseLiveAttachment(rawContent);
+    const isImageAttachment = attachment?.kind === 'image';
     let bubbleInner;
-    if (imgMatch) {
-      const rawUrl  = imgMatch[1];
-      const safeUrl = escAttr(rawUrl);
-      if (window._failedImgUrls.has(rawUrl)) {
-        bubbleInner = replyQuoteHtml + `<span style="font-size:12px;color:#9ca3af;">[이미지 없음]</span>`;
-      } else {
-        const jsEscRawUrl = rawUrl.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-        bubbleInner = replyQuoteHtml + `<img src="${safeUrl}" style="max-width:200px;border-radius:8px;display:block;cursor:pointer;" onclick="window.open('${safeUrl}','_blank','noopener,noreferrer')" onerror="this.style.display='none';window._failedImgUrls.add('${jsEscRawUrl}')">` +
-          `<button onclick="window._downloadImg('${safeUrl}')" class="img-download-btn">⬇ 다운로드</button>`;
-      }
-    } else if (fileMatch) {
-      const fname = fileMatch[1];
-      const furl  = fileMatch[2];
-      const ext   = fname.split('.').pop().toLowerCase();
-      if (/^(mp4|webm|ogg|mov)$/.test(ext)) {
-        bubbleInner = replyQuoteHtml + `<video src="${escAttr(furl)}" controls preload="metadata" style="max-width:220px;border-radius:8px;display:block;"></video>`;
-      } else if (/^(mp3|wav|ogg|m4a|aac)$/.test(ext)) {
-        bubbleInner = replyQuoteHtml + `<audio src="${escAttr(furl)}" controls preload="metadata" style="max-width:220px;display:block;"></audio>`;
-      } else {
-        bubbleInner = replyQuoteHtml + `📎 <a href="${escAttr(furl)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">${escAdmin(fname)}</a>`;
-      }
+    if (attachment) {
+      const attachmentId = liveAttachments.push(attachment) - 1;
+      bubbleInner = replyQuoteHtml + `<span data-live-attachment-id="${attachmentId}"></span>`;
     } else {
       bubbleInner = replyQuoteHtml + (isAdminMsg ? '<span style="font-size:10px;color:#7c3aed;font-weight:700;display:block;margin-bottom:3px;">담당자</span>' : '') + escAdmin(rawContent);
     }
@@ -494,7 +562,7 @@ function renderLiveChatPanel(sess) {
              style="display:flex;justify-content:flex-end;gap:8px;align-items:flex-start;margin-bottom:8px;">
           <div style="display:flex;align-items:flex-end;gap:5px;max-width:calc(100% - 48px);min-width:0;">
             ${timeBadge}
-            <div style="padding:${imgMatch ? '6px' : '10px 13px'};font-size:14.5px;line-height:1.6;word-break:break-word;white-space:pre-wrap;border-radius:16px 16px 2px 16px;background:#7c3aed;color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08);min-width:0;overflow-wrap:break-word;">${bubbleInner}</div>
+            <div style="padding:${isImageAttachment ? '6px' : '10px 13px'};font-size:14.5px;line-height:1.6;word-break:break-word;white-space:pre-wrap;border-radius:16px 16px 2px 16px;background:#7c3aed;color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.08);min-width:0;overflow-wrap:break-word;">${bubbleInner}</div>
           </div>
           <div style="width:40px;height:40px;border-radius:50%;background:#e5e7eb;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;">👤</div>
         </div>
@@ -510,7 +578,7 @@ function renderLiveChatPanel(sess) {
           <div style="flex:1;min-width:0;overflow:hidden;">
             <div style="font-size:12.5px;font-weight:700;color:#111827;margin-bottom:4px;padding-left:2px;">${senderName}</div>
             <div style="display:flex;align-items:flex-end;gap:5px;">
-              <div style="padding:${imgMatch ? '6px' : '10px 13px'};font-size:14.5px;line-height:1.6;word-break:break-word;white-space:pre-wrap;border-radius:2px 16px 16px 16px;background:${isAdminMsg ? '#ede9fe' : '#fff'};color:#1a1a2e;box-shadow:0 1px 2px rgba(0,0,0,.08);min-width:0;overflow-wrap:break-word;max-width:100%;">${bubbleInner}</div>
+              <div style="padding:${isImageAttachment ? '6px' : '10px 13px'};font-size:14.5px;line-height:1.6;word-break:break-word;white-space:pre-wrap;border-radius:2px 16px 16px 16px;background:${isAdminMsg ? '#ede9fe' : '#fff'};color:#1a1a2e;box-shadow:0 1px 2px rgba(0,0,0,.08);min-width:0;overflow-wrap:break-word;max-width:100%;">${bubbleInner}</div>
               ${timeBadge}
             </div>
           </div>
@@ -518,6 +586,11 @@ function renderLiveChatPanel(sess) {
       `;
     }
   }).join('');
+
+  liveAttachments.forEach((attachment, attachmentId) => {
+    const marker = msgs.querySelector(`[data-live-attachment-id="${attachmentId}"]`);
+    if (marker) marker.replaceWith(createLiveAttachmentElement(attachment));
+  });
 
   /* 고객 타이핑 표시 */
   const existingTyping = msgs.querySelector('.customer-typing-indicator');
@@ -597,4 +670,8 @@ function initLiveMsgsScrollListener() {
     const atBottom = msgs.scrollTop + msgs.clientHeight >= msgs.scrollHeight - 30;
     if (atBottom) updateScrollBtn(false);
   });
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { parseLiveAttachment, createLiveAttachmentElement };
 }

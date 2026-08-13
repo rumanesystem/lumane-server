@@ -10,10 +10,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
   <!-- SheetJS (엑셀 내보내기용) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <!-- Chart.js (방문자 통계용) -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
   <link rel="stylesheet" href="css/admin.css?v=20260615a" />
 </head>
@@ -79,6 +79,7 @@
         <span id="serverStatus">서버 확인 중...</span>
       </div>
       <button class="btn btn-outline" onclick="refreshData()">🔄 새로고침</button>
+      <button class="btn btn-outline" type="button" onclick="logoutAdmin()">로그아웃</button>
 
       <!-- 도움말 버튼 -->
       <button onclick="openHelpModal()"
@@ -130,7 +131,7 @@
         <div class="stats-value" id="statUnread">0</div>
         <div class="stats-sub">확인 안 한 새 상담</div>
       </div>
-      <div class="stats-card stats-card--clickable" onclick="switchTab('visitor-stats')" title="방문자 통계 자세히 보기">
+      <div class="stats-card">
         <div class="stats-label">오늘 방문자</div>
         <div class="stats-value" id="statVisitorsToday">—</div>
         <div class="stats-sub" id="statEngagedToday">그 중 대화: — 명 (—)</div>
@@ -395,7 +396,7 @@
   </div>
 
   <!-- =============================================
-       방문자 통계 탭
+       방문자 통계 탭 (dev 동기화)
   ============================================= -->
   <div class="section" id="section-visitor-stats">
 
@@ -570,22 +571,6 @@
       <div style="padding:10px 18px;border-top:1px solid #f3f4f6;font-size:11px;color:#9ca3af;">모델: claude-sonnet-4-6 · 가격: 입력 $3/1M, 출력 $15/1M, 캐시읽기 $0.30/1M</div>
     </div>
 
-  </div>
-
-  <!-- =============================================
-       휴지통 탭
-  ============================================= -->
-  <div class="section" id="section-trash">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
-      <div style="font-size:18px;font-weight:700;">🗑 휴지통</div>
-      <button onclick="loadTrash()" style="padding:6px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;">↻ 새로고침</button>
-    </div>
-    <div style="font-size:13px;color:#6b7280;margin-bottom:14px;">
-      삭제된 상담은 여기에 보관됩니다. 복원하면 원래 자리로 돌아가요.
-    </div>
-    <div id="trashListWrap" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
-      <div id="trashList" style="padding:24px;text-align:center;color:#9ca3af;font-size:13px;">로딩 중…</div>
-    </div>
   </div>
 
   <!-- =============================================
@@ -897,6 +882,22 @@
   box-shadow:0 4px 16px rgba(0,0,0,.25);
 "></div>
 
+<!-- =============================================
+     휴지통 섹션
+============================================= -->
+<div class="section" id="section-trash">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+    <div style="font-size:18px;font-weight:700;">🗑 휴지통</div>
+    <button onclick="loadTrash()" style="padding:6px 14px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;">↻ 새로고침</button>
+  </div>
+  <div style="font-size:13px;color:#6b7280;margin-bottom:14px;">
+    삭제된 상담은 여기에 보관됩니다. 복원하면 원래 자리로 돌아가요.
+  </div>
+  <div id="trashListWrap" style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+    <div id="trashList" style="padding:24px;text-align:center;color:#9ca3af;font-size:13px;">로딩 중…</div>
+  </div>
+</div>
+
 <!-- 토스트 알림 컨테이너 -->
 <!-- =============================================
      백업 섹션
@@ -959,11 +960,11 @@
 <script src="js/admin-live.js?v=20260615a"></script>
 <script src="js/admin-modal.js?v=20260615a"></script>
 <script src="js/admin-quote.js?v=20260615a"></script>
-<script src="js/admin-memos.js?v=20260615a"></script>
-<script src="js/admin-trash.js?v=20260615a"></script>
 <script src="js/admin-stats.js?v=20260615a"></script>
+<script src="js/admin-memos.js?v=20260615a"></script>
 <script src="js/admin.js?v=20260618a"></script>
 <script src="js/admin-backup.js?v=20260615a"></script>
+<script src="js/admin-trash.js?v=20260615a"></script>
 
 </body>
 </html>

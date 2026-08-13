@@ -27,7 +27,7 @@ async function checkServer() {
 
 async function loadStats() {
   try {
-    const res  = await fetch(`${SERVER}/api/admin/stats`, { headers: adminHeaders() });
+    const res  = await adminFetch(`${SERVER}/api/admin/stats`, { headers: adminHeaders() });
     if (!res.ok) return;
     const d = await res.json();
     document.getElementById('statToday').textContent    = (d.today  ?? '—') + '건';
@@ -83,7 +83,7 @@ async function openStatDetail(period, label) {
   switchTab('stat-detail');
 
   try {
-    const res = await fetch(`${SERVER}/api/admin/stat-sessions?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/stat-sessions?period=${encodeURIComponent(period)}`, { headers: adminHeaders() });
     if (myId !== _statRequestId) return;
     if (!res.ok) throw new Error(`서버 오류 ${res.status}`);
     const data = await res.json();
@@ -159,7 +159,7 @@ function showStatDay(date) {
     return;
   }
   body.innerHTML = list.map(s => `
-    <div onclick="openHistoryDetail('${escAttr(String(s.id))}', ${s.is_test ? 1 : 0})"
+    <div onclick="openHistoryDetail('${escAttr(String(s.id))}')"
       style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;background:#f9fafb;margin-bottom:8px;border:1px solid #f3f4f6;cursor:pointer;transition:background .15s;"
       onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
       <div style="font-size:12px;color:#9ca3af;width:36px;flex-shrink:0;">${toKSTTime(s.started_at)}</div>
@@ -199,7 +199,7 @@ async function openMonthDetail() {
   switchTab('stat-detail');
 
   try {
-    const res = await fetch(`${SERVER}/api/admin/stat-sessions?period=month`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/stat-sessions?period=month`, { headers: adminHeaders() });
     if (myId !== _statRequestId) return;
     if (!res.ok) throw new Error(`서버 오류 ${res.status}`);
     const data = await res.json();
@@ -310,7 +310,7 @@ function openWeekDetail(weekLabel) {
       <div style="flex:1;height:1px;background:#e5e7eb;"></div>
     </div>`;
     const rows = list.map(s => `
-      <div onclick="openHistoryDetail('${escAttr(String(s.id))}', ${s.is_test ? 1 : 0})"
+      <div onclick="openHistoryDetail('${escAttr(String(s.id))}')"
         style="display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;background:#f9fafb;margin-bottom:8px;border:1px solid #f3f4f6;cursor:pointer;transition:background .15s;"
         onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#f9fafb'">
         <div style="font-size:12px;color:#9ca3af;width:36px;flex-shrink:0;">${toKSTTime(s.started_at)}</div>
@@ -327,7 +327,7 @@ function openWeekDetail(weekLabel) {
 
 async function loadQuotes() {
   try {
-    const res  = await fetch(`${SERVER}/api/quotes`, { headers: adminHeaders() });
+    const res  = await adminFetch(`${SERVER}/api/quotes`, { headers: adminHeaders() });
     if (!res.ok) throw new Error(`서버 오류 ${res.status}`);
     const data = await res.json();
     allQuotes = (data.quotes || []).slice().sort((a, b) => new Date(b.접수시간 || 0) - new Date(a.접수시간 || 0));
@@ -728,22 +728,24 @@ function switchTab(tab) {
     navItems[2].classList.add('active');
     document.getElementById('topbarTitle').textContent = '📡 라이브 상담';
     startLivePolling();
-  } else if (tab === 'tokens') {
-    document.getElementById('topbarTitle').textContent = '🪙 토큰 사용량';
-    loadTokenStats();
   } else if (tab === 'visitor-stats') {
     document.getElementById('topbarTitle').textContent = '📈 방문자 통계';
     if (typeof loadVisitorStats === 'function') loadVisitorStats(window.currentVsRange || 7);
+  } else if (tab === 'tokens') {
+    document.getElementById('topbarTitle').textContent = '🪙 토큰 사용량';
+    loadTokenStats();
   } else if (tab === 'trash') {
     document.getElementById('topbarTitle').textContent = '🗑 휴지통';
     if (typeof loadTrash === 'function') loadTrash();
-  } else if (tab === 'stat-detail') {
-    document.getElementById('topbarTitle').textContent = '📊 상담 현황';
   } else if (tab === 'backup') {
     document.getElementById('topbarTitle').textContent = '📦 백업';
-    if (window.lumaneBackup && typeof lumaneBackup.renderBackupTab === 'function') {
-      lumaneBackup.renderBackupTab();
+    if (window.lumaneBackup && typeof window.lumaneBackup.renderBackupTab === 'function') {
+      window.lumaneBackup.renderBackupTab();
+    } else if (typeof renderBackupTab === 'function') {
+      renderBackupTab();
     }
+  } else if (tab === 'stat-detail') {
+    document.getElementById('topbarTitle').textContent = '📊 상담 현황';
   } else if (tab === 'history') {
     document.getElementById('topbarTitle').textContent = '🗂️ 저장된 상담';
     updateHistoryBadge(0);
@@ -753,6 +755,14 @@ function switchTab(tab) {
         window.saveAdminSetting?.('lastSeenHistoryAt', loadStartedAt);
       }
     });
+  }
+}
+
+function openRequestedAdminTab() {
+  const requestedTab = window.location.hash.slice(1);
+  const linkableTabs = new Set(['quotes', 'visitor-stats', 'tokens', 'trash', 'backup', 'live', 'history']);
+  if (linkableTabs.has(requestedTab) && document.getElementById(`tab-${requestedTab}`)) {
+    switchTab(requestedTab);
   }
 }
 
@@ -776,7 +786,7 @@ async function loadTokenStats() {
   const errEl = document.getElementById('tk-error');
   errEl.style.display = 'none';
   try {
-    const res = await fetch(`${SERVER}/api/admin/token-stats?period=${_tokenPeriod}`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/token-stats?period=${_tokenPeriod}`, { headers: adminHeaders() });
     const d = await res.json();
     if (!res.ok) {
       errEl.textContent = `오류: ${d.error || res.status}`;
@@ -859,7 +869,7 @@ async function loadHistory() {
   errEl.style.display = 'none';
   listEl.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:32px;font-size:13px;">불러오는 중…</div>';
   try {
-    const res = await fetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/conversations`, { headers: adminHeaders() });
     if (!res.ok) {
       let detail = '';
       try { const d = await res.json(); detail = d.error || ''; } catch(_) {}
@@ -917,7 +927,7 @@ function renderHistoryList(list) {
     <div style="background:#fff;border:1px solid #e5e7eb;border-left:4px solid ${borderColor};border-radius:12px;padding:14px 18px;transition:box-shadow .15s;display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;"
       onmouseover="this.style.boxShadow='0 2px 12px rgba(0,0,0,.08)'"
       onmouseout="this.style.boxShadow='none'">
-      <div onclick="if(window.markSessionSeen)markSessionSeen('${escAttr(c.id)}');openHistoryDetail('${escAttr(c.id)}', ${c.is_test ? 1 : 0})" style="cursor:pointer;">
+      <div onclick="if(window.markSessionSeen)markSessionSeen('${escAttr(c.id)}');openHistoryDetail('${escAttr(c.id)}')" style="cursor:pointer;">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
           <span style="font-size:15px;font-weight:700;">${escAdmin(getConvLabel(c))}</span>
           ${badge(c.save_reason)}
@@ -934,7 +944,7 @@ function renderHistoryList(list) {
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">
         <div style="font-size:14px;font-weight:700;color:#c9a96e;">${fmt(c.estimated_price)}</div>
         <div style="font-size:11px;color:#9ca3af;">${savedAt}</div>
-        <button onclick="deleteConversationById('${escAttr(c.id)}', ${c.is_test ? 1 : 0})"
+        <button onclick="deleteConversationById('${escAttr(c.id)}')"
           style="background:#ef4444;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap;">🗑 삭제</button>
       </div>
     </div>`;
@@ -943,11 +953,9 @@ function renderHistoryList(list) {
 
 let _currentHistoryId = null;
 let _currentHdSessionId = null;
-let _currentHistoryIsTest = false;
 
-async function openHistoryDetail(id, isTest) {
+async function openHistoryDetail(id) {
   _currentHistoryId = id;
-  _currentHistoryIsTest = !!isTest;
   _currentHdSessionId = null;
   const overlay = document.getElementById('historyDetailOverlay');
   overlay.style.display = 'flex';
@@ -960,8 +968,7 @@ async function openHistoryDetail(id, isTest) {
   // 어드민 메모 로드 (백그라운드)
   if (typeof window.hdLoadMemos === 'function') window.hdLoadMemos(id);
   try {
-    const qs = _currentHistoryIsTest ? '?test=1' : '';
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}${qs}`, { headers: adminHeaders() });
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}`, { headers: adminHeaders() });
     if (!res.ok) throw new Error();
     const { conversation: c } = await res.json();
     if (c.session_id) {
@@ -1008,7 +1015,7 @@ async function sendHdReply() {
   btn.disabled = true;
   btn.textContent = '전송 중…';
   try {
-    const takeoverRes = await fetch(`${SERVER}/api/admin/takeover`, {
+    const takeoverRes = await adminFetch(`${SERVER}/api/admin/takeover`, {
       method: 'POST', headers: adminHeaders(),
       body: JSON.stringify({ sessionId: _currentHdSessionId }),
     });
@@ -1017,7 +1024,7 @@ async function sendHdReply() {
       try { errMsg = (await takeoverRes.json()).error || errMsg; } catch {}
       throw new Error(errMsg);
     }
-    const res = await fetch(`${SERVER}/api/admin/message`, {
+    const res = await adminFetch(`${SERVER}/api/admin/message`, {
       method: 'POST', headers: adminHeaders(),
       body: JSON.stringify({ sessionId: _currentHdSessionId, message: msg }),
     });
@@ -1044,14 +1051,12 @@ function closeHistoryDetail(e) {
   document.getElementById('historyDetailOverlay').style.display = 'none';
   _currentHistoryId = null;
   _currentHdSessionId = null;
-  _currentHistoryIsTest = false;
 }
 
-async function deleteConversationById(id, isTest) {
+async function deleteConversationById(id) {
   if (!confirm('이 상담 기록을 삭제하시겠습니까? 복구할 수 없습니다.')) return;
   try {
-    const qs = isTest ? '?test=1' : '';
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}${qs}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(id)}`, {
       method: 'DELETE', headers: adminHeaders(),
     });
     if (!res.ok) { const d = await res.json(); throw new Error(d.error || res.status); }
@@ -1069,8 +1074,7 @@ async function deleteConversation() {
   btn.textContent = '삭제 중…';
   btn.disabled = true;
   try {
-    const qs = _currentHistoryIsTest ? '?test=1' : '';
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(_currentHistoryId)}${qs}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(_currentHistoryId)}`, {
       method: 'DELETE', headers: adminHeaders(),
     });
     if (!res.ok) { const d = await res.json(); throw new Error(d.error || res.status); }
@@ -1090,8 +1094,7 @@ async function registerQuoteFromConversation() {
   btn.textContent = '등록 중…';
   btn.disabled = true;
   try {
-    const qs = _currentHistoryIsTest ? '?test=1' : '';
-    const res = await fetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(_currentHistoryId)}/register-quote${qs}`, {
+    const res = await adminFetch(`${SERVER}/api/admin/conversations/${encodeURIComponent(_currentHistoryId)}/register-quote`, {
       method: 'POST', headers: adminHeaders(),
     });
     if (!res.ok) { const d = await res.json(); throw new Error(d.error || res.status); }
@@ -1143,12 +1146,6 @@ function hideTkTooltip() {
    앱 초기화
 ================================================================ */
 
-checkServer().then(() => startBgPolling());
-setInterval(checkServer, 30000);
-initAdminFileUpload();
-initAdminPaste();
-initAdminCtxMenuListener();
-initAdminSearch();
 window.toggleAdminSearch    = toggleAdminSearch;
 window.clearAdminReplyBar   = clearAdminReplyBar;
 
@@ -1179,14 +1176,17 @@ window.applyTemplate        = applyTemplate;
 window.sendHdReply          = sendHdReply;
 
 /* 배포 자동감지 — 새 버전 배포 시 자동 새로고침 */
-(async function startUpdateChecker() {
+async function startUpdateChecker() {
+  if (!isAdminAuthActive()) return;
   let currentVersion = null;
   try {
     const r = await fetch(`${SERVER}/api/version`);
     if (r.ok) currentVersion = (await r.json()).v;
   } catch { /* 무시 */ }
 
-  setInterval(async () => {
+  if (!isAdminAuthActive()) return;
+
+  adminUpdateTimer = setInterval(async () => {
     if (!serverOnline) return;
     try {
       const r = await fetch(`${SERVER}/api/version?t=${Date.now()}`);
@@ -1197,19 +1197,40 @@ window.sendHdReply          = sendHdReply;
       }
     } catch { /* 무시 */ }
   }, 30000);
-})();
+}
 
 /* ================================================================
    브라우저 알림 (상담원용)
 ================================================================ */
-(function initAdminNotifications() {
+function initAdminNotifications() {
   if (!('Notification' in window)) return;
 
   // 권한 요청 (아직 결정 안 됐을 때만)
   if (Notification.permission === 'default') {
     Notification.requestPermission();
   }
-})();
+}
+
+async function initializeAdminApp() {
+  const authenticated = await verifyAdminSession();
+  if (!authenticated) return;
+
+  await checkServer();
+  if (!isAdminAuthActive()) return;
+  openRequestedAdminTab();
+  startBgPolling();
+  prewarmSourceStats();
+  adminHealthTimer = setInterval(checkServer, 30000);
+  adminSessionTimer = setInterval(verifyAdminSession, 60 * 1000);
+  initAdminFileUpload();
+  initAdminPaste();
+  initAdminCtxMenuListener();
+  initAdminSearch();
+  startUpdateChecker();
+  initAdminNotifications();
+}
+
+initializeAdminApp();
 
 let _notifiedSessions = new Set();
 let _notifiedMsgCounts = {};

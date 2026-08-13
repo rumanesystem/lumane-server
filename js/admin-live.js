@@ -7,7 +7,7 @@
 const _adminSettings = {};
 async function loadAdminSettings() {
   try {
-    const res = await fetch('/api/admin/settings', { headers: adminHeaders() });
+    const res = await adminFetch('/api/admin/settings', { headers: adminHeaders() });
     if (!res.ok) return;
     const { settings } = await res.json();
     Object.assign(_adminSettings, settings);
@@ -25,7 +25,7 @@ async function loadAdminSettings() {
 }
 function saveAdminSetting(key, value) {
   _adminSettings[key] = value;
-  fetch('/api/admin/settings', {
+  adminFetch('/api/admin/settings', {
     method: 'POST',
     headers: adminHeaders(),
     body: JSON.stringify({ key, value })
@@ -42,7 +42,7 @@ function _getSeenSessions() {
 }
 async function _loadSeenCounts() {
   try {
-    const res = await fetch('/api/admin/seen-counts', { headers: adminHeaders() });
+    const res = await adminFetch('/api/admin/seen-counts', { headers: adminHeaders() });
     if (!res.ok) return;
     const { counts } = await res.json();
     Object.assign(_seenMsgCounts, counts);
@@ -70,7 +70,7 @@ async function _loadSeenCounts() {
 function _saveSeenCount(sessionId, count) {
   const id = String(sessionId);
   _seenMsgCounts[id] = count;
-  fetch('/api/admin/seen-counts', {
+  adminFetch('/api/admin/seen-counts', {
     method: 'POST',
     headers: adminHeaders(),
     body: JSON.stringify({ session_id: id, count })

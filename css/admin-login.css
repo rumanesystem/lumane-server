@@ -1,0 +1,89 @@
+:root {
+  --primary: #c9a96e;
+  --primary-strong: #a8883f;
+  --surface: #ffffff;
+  --surface-warm: #faf9f7;
+  --text: #2c2820;
+  --text-secondary: #6b6056;
+  --outline: #e4ddd2;
+  --danger: #b91c1c;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  color: var(--text);
+  background: var(--surface-warm);
+  font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.login-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+.login-card {
+  width: min(100%, 420px);
+  padding: 32px;
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgba(44, 40, 32, 0.08);
+}
+
+.brand {
+  margin: 0 0 8px;
+  color: var(--primary-strong);
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-size: 24px;
+  letter-spacing: 0.02em;
+}
+
+h1 { margin: 0; font-size: 24px; line-height: 1.35; }
+.description { margin: 8px 0 24px; color: var(--text-secondary); font-size: 15px; line-height: 1.6; }
+.field + .field { margin-top: 16px; }
+label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+
+input {
+  width: 100%;
+  min-height: 46px;
+  padding: 12px;
+  border: 1px solid var(--outline);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 3px solid rgba(201, 169, 110, 0.45);
+  outline-offset: 2px;
+}
+
+.error { min-height: 24px; margin: 12px 0; color: var(--danger); font-size: 14px; line-height: 1.5; }
+
+button {
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--primary);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover { background: var(--primary-strong); }
+button:disabled { cursor: wait; opacity: 0.7; }
+
+@media (max-width: 359px) {
+  .login-shell { padding: 16px 12px; }
+  .login-card { padding: 24px 16px; }
+}
